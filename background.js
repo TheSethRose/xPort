@@ -321,6 +321,9 @@ async function flush() {
       const resp = await sendToHost(message);
       if (resp && !resp.ok) {
         console.error('[xTap] Host rejected tweets:', resp.error);
+        buffer.unshift(...batch);
+      } else {
+        saveState();
       }
     } catch (e) {
       console.error('[xTap] Send failed, buffering tweets back:', e);
@@ -388,7 +391,6 @@ function enqueueTweets(tweets, endpoint = 'unknown') {
   sessionCount += newCount;
   allTimeCount += newCount;
   updateBadge();
-  saveState();
 
   if (buffer.length >= BATCH_SIZE) flush();
 }
