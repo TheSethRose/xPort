@@ -36,12 +36,10 @@ jobs:
             native-host/xtap_host.bat \
             native-host/xtap_daemon.bat
 
-      - name: Create GitHub Release
+      - name: Upload zip to release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          gh release create "$GITHUB_REF_NAME" \
-            --title "xTap ${VERSION}" \
-            --generate-notes \
+          gh release upload "$GITHUB_REF_NAME" \
             "xtap-${VERSION}.zip#xTap ${VERSION} (extension + native host)"
