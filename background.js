@@ -19,6 +19,8 @@ let debugLogging = false;
 let verboseLogging = false;
 let logBuffer = [];
 const isDevMode = !chrome.runtime.getManifest().update_url;
+const hasSessionStorage = !!chrome.storage.session;
+const traceStorage = chrome.storage.session || chrome.storage.local;
 let readyResolve;
 const ready = new Promise(r => { readyResolve = r; });
 
@@ -37,12 +39,12 @@ let httpPort = null;
 // --- State persistence ---
 
 function seenIdsStorage() {
-  return isDevMode ? chrome.storage.session : chrome.storage.local;
+  return (isDevMode && hasSessionStorage) ? chrome.storage.session : chrome.storage.local;
 }
 
 async function saveState() {
   const seenData = { seenIds: [...seenIds].slice(-MAX_SEEN_IDS) };
-  if (isDevMode) {
+  if (isDevMode && hasSessionStorage) {
     await Promise.all([
       chrome.storage.session.set(seenData),
       chrome.storage.local.set({ allTimeCount, captureEnabled }),
@@ -105,10 +107,20 @@ async function httpFetch(method, path, body) {
   }
 }
 
+// AbortSignal.timeout may not exist in all MV3 runtimes (e.g. older Firefox)
+function makeTimeoutSignal(ms) {
+  if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+    return AbortSignal.timeout(ms);
+  }
+  const controller = new AbortController();
+  setTimeout(() => controller.abort(), ms); // timer self-clears when SW terminates
+  return controller.signal;
+}
+
 async function probeHttp(port, token) {
   try {
     const resp = await fetch(`http://127.0.0.1:${port}/status`, {
-      signal: AbortSignal.timeout(3000)
+      signal: makeTimeoutSignal(3000)
     });
     const data = await resp.json();
     return data.ok === true;
@@ -348,7 +360,7 @@ function emitTraceEvent(event) {
   if (!traceFlushTimer) {
     traceFlushTimer = setTimeout(() => {
       traceFlushTimer = null;
-      chrome.storage.session.set({ lastEvents: traceEvents });
+      traceStorage.set({ lastEvents: traceEvents });
     }, 500);
   }
 }
@@ -678,9 +690,15 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
 // --- Init ---
 
-chrome.storage.session.setAccessLevel({ accessLevel: 'TRUSTED_AND_UNTRUSTED_CONTEXTS' });
+if (typeof chrome.storage.session?.setAccessLevel === 'function') {
+  chrome.storage.session.setAccessLevel({ accessLevel: 'TRUSTED_AND_UNTRUSTED_CONTEXTS' });
+}
 
-restoreState().then(async () => {
+// Graceful degradation: if restoreState fails (e.g. storage unavailable), continue
+// with defaults so the extension still captures tweets.
+restoreState().catch((e) => {
+  console.error('[xTap] Failed to restore state:', e);
+}).then(async () => {
   readyResolve();
   updateBadge();
   await initTransport();
@@ -689,5 +707,6 @@ restoreState().then(async () => {
     flushTimer = setTimeout(() => { scheduledFlush(); scheduleNextFlush(); }, FLUSH_INTERVAL_MS + jitter);
   }
   scheduleNextFlush();
-  console.log(`[xTap] Service worker started (${isDevMode ? 'dev' : 'production'} mode, seenIds in ${isDevMode ? 'session' : 'local'} storage)`);
+  const seenStorageLabel = (isDevMode && hasSessionStorage) ? 'session' : 'local';
+  console.log(`[xTap] Service worker started (${isDevMode ? 'dev' : 'production'} mode, seenIds in ${seenStorageLabel} storage)`);
 });
