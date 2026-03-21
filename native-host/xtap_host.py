@@ -98,8 +98,11 @@ def _handle_message(msg, default_dir, seen_ids, custom_dirs):
 
     # Handle path test
     if msg.get('type') == 'TEST_PATH':
-        test_path(out_dir)
-        send_message({'ok': True, 'type': 'TEST_PATH'})
+        try:
+            test_path(out_dir)
+            send_message({'ok': True, 'type': 'TEST_PATH'})
+        except Exception as e:
+            send_message({'ok': False, 'type': 'TEST_PATH', 'error': str(e)})
         return
 
     # Handle dump (discovery mode)
