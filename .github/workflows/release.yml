@@ -19,16 +19,19 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           zip -r "xtap-${VERSION}.zip" \
             manifest.json \
+            manifest.firefox.json \
             background.js \
             content-main.js \
             content-bridge.js \
             popup.html popup.js popup.css \
+            debug.html debug.js debug.css \
             icons/ \
             lib/ \
             native-host/xtap_core.py \
             native-host/xtap_host.py \
             native-host/xtap_daemon.py \
             native-host/com.xtap.host.json \
+            native-host/com.xtap.host.firefox.json \
             native-host/com.xtap.daemon.plist \
             native-host/com.xtap.daemon.service \
             native-host/install.sh \
