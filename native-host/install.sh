@@ -152,6 +152,7 @@ if [ "$OS" = "Darwin" ]; then
 
   # Capture user's PATH so the daemon can find yt-dlp and other tools
   USER_PATH="$PATH"
+  XTAP_LOG_LEVEL="${XTAP_LOG_LEVEL:-info}"
 
   # Substitute plist template
   mkdir -p "$HOME/Library/LaunchAgents"
@@ -160,6 +161,7 @@ if [ "$OS" = "Darwin" ]; then
     -e "s|__DAEMON_PATH__|${DAEMON_PATH}|g" \
     -e "s|__HOME_DIR__|${HOME}|g" \
     -e "s|__PATH__|${USER_PATH}|g" \
+    -e "s|__LOG_LEVEL__|${XTAP_LOG_LEVEL}|g" \
     "$PLIST_TEMPLATE" > "$PLIST_DEST"
 
   # Load daemon
@@ -200,6 +202,7 @@ if [ "$OS" = "Linux" ]; then
 
   # Capture user's PATH so the daemon can find yt-dlp and other tools
   USER_PATH="$PATH"
+  XTAP_LOG_LEVEL="${XTAP_LOG_LEVEL:-info}"
 
   # Substitute service template
   mkdir -p "$SERVICE_DIR"
@@ -208,6 +211,7 @@ if [ "$OS" = "Linux" ]; then
     -e "s|__DAEMON_PATH__|${DAEMON_PATH}|g" \
     -e "s|__HOME_DIR__|${HOME}|g" \
     -e "s|__PATH__|${USER_PATH}|g" \
+    -e "s|__LOG_LEVEL__|${XTAP_LOG_LEVEL}|g" \
     "$SERVICE_TEMPLATE" > "$SERVICE_DEST"
 
   # Reload and enable
@@ -228,3 +232,6 @@ fi
 echo ""
 echo "Output directory (set XTAP_OUTPUT_DIR to change):"
 echo "  ${XTAP_OUTPUT_DIR:-$HOME/Downloads/xtap}"
+echo ""
+echo "Debug logging (re-run install after setting):"
+echo "  export XTAP_LOG_LEVEL=debug"

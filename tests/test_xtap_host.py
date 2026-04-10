@@ -73,20 +73,15 @@ class TestReadMessage:
 
 class TestGetTokenWithoutStorage:
 
-    def test_get_token_does_not_require_storage_init(self, monkeypatch, tmp_path):
-        """GET_TOKEN should succeed even when the output directory is inaccessible."""
+    def test_get_token_returns_secret(self, monkeypatch, tmp_path):
+        """GET_TOKEN should read ~/.xtap/secret and return it."""
         # Create a secret file
         xtap_dir = tmp_path / '.xtap'
         xtap_dir.mkdir()
         secret_file = xtap_dir / 'secret'
         secret_file.write_text('test-token-abc')
         monkeypatch.setattr(xtap_host, 'XTAP_SECRET', str(secret_file))
-
-        # Point DEFAULT_OUTPUT_DIR at a path that doesn't exist and can't be created
-        bad_dir = '/nonexistent/readonly/path'
-        monkeypatch.setattr('xtap_core.DEFAULT_OUTPUT_DIR', bad_dir)
-        # Also patch the local reference imported into xtap_host
-        monkeypatch.setattr(xtap_host, 'DEFAULT_OUTPUT_DIR', bad_dir)
+        monkeypatch.setattr(xtap_host, 'XTAP_DIR', str(xtap_dir))
 
         # Build a stdin stream: one GET_TOKEN message, then EOF
         raw = _encode_native_message({'type': 'GET_TOKEN'})
@@ -104,3 +99,45 @@ class TestGetTokenWithoutStorage:
         resp = json.loads(out_buf.read(resp_len))
         assert resp['ok'] is True
         assert resp['token'] == 'test-token-abc'
+        assert resp['port'] == 17381
+
+    def test_unsupported_message_returns_error(self, monkeypatch, tmp_path):
+        """Non-GET_TOKEN messages should return an error."""
+        xtap_dir = tmp_path / '.xtap'
+        xtap_dir.mkdir()
+        monkeypatch.setattr(xtap_host, 'XTAP_DIR', str(xtap_dir))
+
+        raw = _encode_native_message({'type': 'TWEETS', 'tweets': []})
+        monkeypatch.setattr('sys.stdin', type('', (), {'buffer': io.BytesIO(raw)})())
+
+        out_buf = io.BytesIO()
+        monkeypatch.setattr('sys.stdout', type('', (), {'buffer': out_buf})())
+
+        xtap_host.main()
+
+        out_buf.seek(0)
+        resp_len = struct.unpack('<I', out_buf.read(4))[0]
+        resp = json.loads(out_buf.read(resp_len))
+        assert resp['ok'] is False
+        assert 'Unsupported' in resp['error']
+
+    def test_missing_secret_returns_error(self, monkeypatch, tmp_path):
+        """GET_TOKEN when secret file is missing should return a clear error."""
+        xtap_dir = tmp_path / '.xtap'
+        xtap_dir.mkdir()
+        monkeypatch.setattr(xtap_host, 'XTAP_SECRET', str(xtap_dir / 'nonexistent'))
+        monkeypatch.setattr(xtap_host, 'XTAP_DIR', str(xtap_dir))
+
+        raw = _encode_native_message({'type': 'GET_TOKEN'})
+        monkeypatch.setattr('sys.stdin', type('', (), {'buffer': io.BytesIO(raw)})())
+
+        out_buf = io.BytesIO()
+        monkeypatch.setattr('sys.stdout', type('', (), {'buffer': out_buf})())
+
+        xtap_host.main()
+
+        out_buf.seek(0)
+        resp_len = struct.unpack('<I', out_buf.read(4))[0]
+        resp = json.loads(out_buf.read(resp_len))
+        assert resp['ok'] is False
+        assert 'not found' in resp['error']

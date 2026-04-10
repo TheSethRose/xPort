@@ -65,24 +65,23 @@ xTap is a browser extension (Chrome + Firefox) that silently intercepts the Grap
      └──────────┬─────────┬───────┘
                 │         │
           HTTP  │         │ native messaging
-      (primary) │         │ (token bootstrap
-                │         │  + data fallback)
+     (all data) │         │ (token bootstrap only)
+                │         │
                 ▼         ▼
      ┌──────────────┐  ┌──────────────┐
      │ xtap_daemon  │  │ xtap_host.py │
      │ (HTTP)       │  │ (stdio)      │
-     └──────┬───────┘  └──────┬───────┘
-            │                 │
-            ▼                 ▼
+     └──────┬───────┘  └──────────────┘
+            │
+            ▼
        tweets-YYYY-MM-DD.jsonl
 ```
 
 1. A MAIN world content script patches `fetch` and `XMLHttpRequest.open()` to observe GraphQL responses as they arrive
 2. Payloads are relayed via a random-named `CustomEvent` to an ISOLATED world bridge, which forwards them to the service worker
 3. The service worker parses, normalizes, deduplicates, and batches tweets
-4. Batches are sent to disk via one of two transports:
-   - **HTTP daemon**: a standalone `xtap_daemon.py` process on `127.0.0.1:17381`, managed by launchd (macOS), systemd (Linux), or Scheduled Task (Windows). On macOS, it runs outside browser TCC sandboxes and can write to protected paths like `~/Documents` and iCloud Drive
-   - **Native messaging**: `xtap_host.py` over browser native messaging (Chrome/Firefox) — used at startup to retrieve the daemon's auth token (`GET_TOKEN`), and as a data transport fallback if HTTP is unavailable
+4. Batches are sent to disk via the **HTTP daemon** (`xtap_daemon.py`), a standalone process on `127.0.0.1:17381` managed by launchd (macOS), systemd (Linux), or Scheduled Task (Windows). On macOS, it runs outside browser TCC sandboxes and can write to protected paths like `~/Documents` and iCloud Drive
+5. At startup, the extension retrieves the daemon's auth token via **native messaging** (`xtap_host.py` over Chrome/Firefox native messaging). This is a one-time bootstrap — all data flows through HTTP
 
 ## Is This Safe to Use?
 
@@ -153,9 +152,9 @@ cd native-host
 ./install.sh firefox
 ```
 
-This installs the native messaging host and an HTTP daemon (`xtap_daemon.py`) that runs via launchd. The daemon runs independently of the browser process tree and has its own TCC permissions, so it can write to protected paths like `~/Documents` and iCloud Drive. The installer captures your current `PATH` so the daemon can find tools like `yt-dlp`.
+This installs the native messaging host (for auth token bootstrap) and an HTTP daemon (`xtap_daemon.py`) that runs via launchd. The daemon runs independently of the browser process tree and has its own TCC permissions, so it can write to protected paths like `~/Documents` and iCloud Drive. The installer captures your current `PATH` so the daemon can find tools like `yt-dlp`.
 
-The extension automatically detects the daemon and uses it as the primary transport, falling back to native messaging if unavailable.
+The extension automatically detects the daemon via the native host's auth token. If the daemon is not running, the extension will show a red "!" badge and an error in the popup.
 
 </details>
 
@@ -204,11 +203,54 @@ Open [x.com](https://x.com) and browse normally. The badge counter on the extens
 ### Upgrading from a previous version
 
 After updating the extension files:
-1. Re-run the installer (`install.sh` on macOS/Linux, `install.ps1` on Windows) — this updates the daemon's PATH (required for yt-dlp support) and picks up new Python code
+1. Re-run the installer (`install.sh` on macOS/Linux, `install.ps1` on Windows) — this updates the daemon configuration and picks up new Python code
 2. Reload the extension in your browser extension manager
 3. Hard-reload any open X tabs (`Cmd+Shift+R` / `Ctrl+Shift+R`)
 
-If you previously installed xTap before v0.13.0 on macOS, re-running `install.sh` is **required** for video download support — the daemon needs an updated launchd configuration to find yt-dlp on your PATH. On Linux and Windows, the daemon is new in this version — running the installer will set it up automatically.
+**From versions before v0.19.0:** The native messaging host (`xtap_host.py`) no longer handles tweet writing — all data now flows through the HTTP daemon exclusively. Re-running `install.sh` is required to update the daemon's service configuration (adds `XTAP_LOG_LEVEL` support). The extension will show a red "!" badge if the daemon is not running, instead of silently falling back to native messaging.
+
+**From versions before v0.13.0 on macOS:** Re-running `install.sh` is **required** for video download support — the daemon needs an updated launchd configuration to find yt-dlp on your PATH.
+
+### Troubleshooting
+
+If the extension shows "Not connected" or a red "!" badge:
+
+1. **Check if the daemon is running:**
+   ```bash
+   curl http://127.0.0.1:17381/status
+   # Should return: {"ok": true, "version": "..."}
+   ```
+
+2. **Check daemon logs:**
+   ```bash
+   cat ~/.xtap/daemon-stderr.log
+   ```
+   The daemon logs startup diagnostics (Python version, output directory, token status) on every start. Common issues:
+   - `FATAL: ~/.xtap/secret not found` — run `install.sh` first
+   - `FATAL: Cannot bind to 127.0.0.1:17381` — another instance is already running
+   - Import errors — check Python version (`python3 --version`, requires 3.x)
+
+3. **Check native host errors** (token bootstrap failures):
+   ```bash
+   cat ~/.xtap/host-error.log
+   ```
+   This file is created when the native messaging host crashes. It includes the Python version, script path, and full traceback.
+
+4. **Enable debug logging** for detailed request-level daemon logs:
+   ```bash
+   export XTAP_LOG_LEVEL=debug
+   cd native-host && ./install.sh <extension-id> chrome
+   ```
+   Then check `~/.xtap/daemon-stderr.log` for per-request details (method, path, duration, tweet counts).
+
+5. **Verify the native messaging manifest** points to the correct path:
+   ```bash
+   # Chrome (macOS):
+   cat ~/Library/Application\ Support/Google/Chrome/NativeMessagingHosts/com.xtap.host.json
+   # Firefox (macOS):
+   cat ~/Library/Application\ Support/Mozilla/NativeMessagingHosts/com.xtap.host.json
+   ```
+   The `path` field should point to `xtap_host.py` in your xTap directory.
 
 ## Configuration
 
@@ -228,7 +270,7 @@ export XTAP_OUTPUT_DIR="$HOME/Documents/xtap-data"
 | `XTAP_OUTPUT_DIR` env var | `~/Downloads/xtap` | Fallback when no popup setting is configured |
 | Debug Dashboard | — | Accessible via popup link; shows live capture events, transport health, debug logging and discovery mode toggles, and parser sandbox |
 
-> **macOS note:** On macOS, the HTTP daemon (installed via `install.sh`) runs outside browser TCC sandboxes and can write to protected paths like `~/Documents` and iCloud Drive after a one-time macOS permission prompt. If the daemon is unavailable and the extension falls back to native messaging, protected paths will fail with a permission error — `~/Downloads` is the safe default in that case.
+> **macOS note:** On macOS, the HTTP daemon (installed via `install.sh`) runs outside browser TCC sandboxes and can write to protected paths like `~/Documents` and iCloud Drive after a one-time macOS permission prompt.
 
 ## Output Format
 
@@ -303,7 +345,7 @@ xTap/
 ├── lib/                       # Shared utilities
 └── native-host/
     ├── xtap_core.py              # Shared file I/O logic
-    ├── xtap_host.py              # Native messaging host (Python, stdio)
+    ├── xtap_host.py              # Native messaging host — token bootstrap only (Python, stdio)
     ├── xtap_daemon.py            # HTTP daemon
     ├── com.xtap.daemon.plist     # launchd plist template (macOS)
     ├── com.xtap.daemon.service   # systemd unit template (Linux)
@@ -352,7 +394,7 @@ Get-Content ~\.xtap\daemon-stderr.log -Tail 50 -Wait                            
 ## Testing
 
 ```bash
-python3 -m pytest tests/test_xtap_core.py -v
+python3 -m pytest tests/ -v
 node --test tests/*.test.mjs
 ```
 

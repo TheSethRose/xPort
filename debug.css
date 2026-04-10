@@ -92,6 +92,7 @@ h2 {
 
 .status-connected { color: #4ade80; }
 .status-disconnected { color: #facc15; }
+.status-error { color: #f87171; }
 
 .toggle-row {
   margin-top: 12px;

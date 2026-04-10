@@ -8,6 +8,8 @@ const hCapture = document.getElementById('h-capture');
 const hSession = document.getElementById('h-session');
 const hAlltime = document.getElementById('h-alltime');
 const hBuffer = document.getElementById('h-buffer');
+const hErrorRow = document.getElementById('h-error-row');
+const hError = document.getElementById('h-error');
 const debugToggle = document.getElementById('debug-toggle');
 const verboseToggle = document.getElementById('verbose-toggle');
 
@@ -21,6 +23,12 @@ function refreshHealth() {
     hSession.textContent = resp.sessionCount.toLocaleString();
     hAlltime.textContent = resp.allTimeCount.toLocaleString();
     hBuffer.textContent = resp.buffered;
+    if (resp.transportError) {
+      hErrorRow.style.display = '';
+      hError.textContent = resp.transportError;
+    } else {
+      hErrorRow.style.display = 'none';
+    }
     debugToggle.checked = !!resp.debugLogging;
     verboseToggle.checked = !!resp.verboseLogging;
   });

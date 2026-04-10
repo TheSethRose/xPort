@@ -6,6 +6,7 @@ import os
 import platform
 import signal
 import sys
+import time
 import uuid
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
@@ -13,11 +14,23 @@ from xtap_core import (DEFAULT_OUTPUT_DIR, load_seen_ids, resolve_output_dir,
                        write_tweets, write_log, write_dump, test_path,
                        check_ytdlp, start_download, get_download_status)
 
-VERSION = '0.18.0'
+VERSION = '0.19.0'
 BIND_HOST = '127.0.0.1'
 BIND_PORT = 17381
 XTAP_DIR = os.path.expanduser('~/.xtap')
 XTAP_SECRET = os.path.join(XTAP_DIR, 'secret')
+
+# Log level: 'info' (default) or 'debug'
+LOG_LEVEL = os.environ.get('XTAP_LOG_LEVEL', 'info').lower()
+
+
+def log_info(msg):
+    print(msg, file=sys.stderr)
+
+
+def log_debug(msg):
+    if LOG_LEVEL == 'debug':
+        print(f'[DEBUG] {msg}', file=sys.stderr)
 
 
 def load_token():
@@ -25,7 +38,7 @@ def load_token():
         with open(XTAP_SECRET, 'r') as f:
             return f.read().strip()
     except FileNotFoundError:
-        print(f'FATAL: {XTAP_SECRET} not found. Run install.sh first.', file=sys.stderr)
+        log_info(f'FATAL: {XTAP_SECRET} not found. Run install.sh first.')
         sys.exit(1)
 
 
@@ -37,8 +50,8 @@ _custom_dirs = set()
 
 class DaemonHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
-        # Log to stderr (captured by launchd)
-        print(f'{self.client_address[0]} - {format % args}', file=sys.stderr)
+        # Log to stderr (captured by launchd/systemd)
+        log_info(f'{self.client_address[0]} - {format % args}')
 
     def _send_json(self, obj, status=200):
         body = json.dumps(obj).encode('utf-8')
@@ -47,6 +60,7 @@ class DaemonHandler(BaseHTTPRequestHandler):
         self.send_header('Content-Length', len(body))
         self.end_headers()
         self.wfile.write(body)
+        log_debug(f'  -> {status} ({len(body)} bytes)')
 
     def _read_json(self):
         length = int(self.headers.get('Content-Length', 0))
@@ -57,17 +71,20 @@ class DaemonHandler(BaseHTTPRequestHandler):
     def _check_auth(self):
         auth = self.headers.get('Authorization', '')
         if not auth.startswith('Bearer ') or auth[7:] != _token:
+            log_debug(f'  Auth failed (header {"present" if auth else "missing"})')
             self._send_json({'ok': False, 'error': 'Unauthorized'}, 401)
             return False
         return True
 
     def do_GET(self):
+        log_debug(f'GET {self.path}')
         if self.path == '/status':
             self._send_json({'ok': True, 'version': VERSION})
             return
         self._send_json({'ok': False, 'error': 'Not found'}, 404)
 
     def do_POST(self):
+        log_debug(f'POST {self.path} (Content-Length: {self.headers.get("Content-Length", "0")})')
         if not self._check_auth():
             return
 
@@ -77,6 +94,7 @@ class DaemonHandler(BaseHTTPRequestHandler):
             self._send_json({'ok': False, 'error': f'Invalid JSON: {e}'}, 400)
             return
 
+        t0 = time.monotonic()
         if self.path == '/tweets':
             self._handle_tweets(body)
         elif self.path == '/log':
@@ -93,6 +111,8 @@ class DaemonHandler(BaseHTTPRequestHandler):
             self._handle_download_status(body)
         else:
             self._send_json({'ok': False, 'error': 'Not found'}, 404)
+        elapsed = (time.monotonic() - t0) * 1000
+        log_debug(f'  Completed in {elapsed:.1f}ms')
 
     def _handle_tweets(self, body):
         try:
@@ -100,8 +120,11 @@ class DaemonHandler(BaseHTTPRequestHandler):
             out_dir = resolve_output_dir(msg_dir, DEFAULT_OUTPUT_DIR, _seen_ids, _custom_dirs)
             tweets = body.get('tweets', [])
             count, dupes = write_tweets(tweets, out_dir, _seen_ids)
+            log_debug(f'  Tweets: {count} written, {dupes} dupes -> {out_dir}')
             self._send_json({'ok': True, 'count': count, 'dupes': dupes})
         except Exception as e:
+            log_info(f'ERROR /tweets: {e}')
+            log_debug(f'  Traceback: {_format_exc()}')
             self._send_json({'ok': False, 'error': str(e)}, 500)
 
     def _handle_log(self, body):
@@ -112,6 +135,8 @@ class DaemonHandler(BaseHTTPRequestHandler):
             logged = write_log(lines, out_dir)
             self._send_json({'ok': True, 'logged': logged})
         except Exception as e:
+            log_info(f'ERROR /log: {e}')
+            log_debug(f'  Traceback: {_format_exc()}')
             self._send_json({'ok': False, 'error': str(e)}, 500)
 
     def _handle_dump(self, body):
@@ -123,6 +148,8 @@ class DaemonHandler(BaseHTTPRequestHandler):
             path = write_dump(filename, content, out_dir)
             self._send_json({'ok': True, 'path': path})
         except Exception as e:
+            log_info(f'ERROR /dump: {e}')
+            log_debug(f'  Traceback: {_format_exc()}')
             self._send_json({'ok': False, 'error': str(e)}, 500)
 
     def _handle_test_path(self, body):
@@ -135,10 +162,12 @@ class DaemonHandler(BaseHTTPRequestHandler):
             test_path(out_dir)
             self._send_json({'ok': True, 'type': 'TEST_PATH'})
         except Exception as e:
+            log_info(f'ERROR /test-path: {e}')
             self._send_json({'ok': False, 'error': str(e)}, 500)
 
     def _handle_check_ytdlp(self, body):
         available = check_ytdlp()
+        log_debug(f'  yt-dlp available: {available}')
         self._send_json({'ok': True, 'available': available})
 
     def _handle_download_video(self, body):
@@ -150,14 +179,21 @@ class DaemonHandler(BaseHTTPRequestHandler):
             out_dir = resolve_output_dir(msg_dir, DEFAULT_OUTPUT_DIR, _seen_ids, _custom_dirs)
             download_id = str(uuid.uuid4())
             start_download(download_id, tweet_url, direct_url, out_dir, post_date)
+            log_debug(f'  Download started: {download_id} -> {tweet_url}')
             self._send_json({'ok': True, 'downloadId': download_id})
         except Exception as e:
+            log_info(f'ERROR /download-video: {e}')
             self._send_json({'ok': False, 'error': str(e)}, 500)
 
     def _handle_download_status(self, body):
         download_id = body.get('downloadId', '')
         status = get_download_status(download_id)
         self._send_json({'ok': True, **status})
+
+
+def _format_exc():
+    import traceback
+    return traceback.format_exc().replace('\n', ' | ')
 
 
 def _setup_stdio():
@@ -171,6 +207,29 @@ def _setup_stdio():
         sys.stderr = open(os.path.join(XTAP_DIR, 'daemon-stderr.log'), 'a')
 
 
+def _log_startup_diagnostics():
+    """Log system and configuration info on startup."""
+    log_info(f'xTap daemon v{VERSION}')
+    log_info(f'  Python:     {sys.version.split(chr(10))[0]}')
+    log_info(f'  Executable: {sys.executable}')
+    log_info(f'  Script:     {os.path.abspath(__file__)}')
+    log_info(f'  Platform:   {platform.system()} {platform.release()}')
+    log_info(f'  Output dir: {DEFAULT_OUTPUT_DIR}')
+    log_info(f'  Token:      loaded ({len(_token)} chars)')
+    log_info(f'  Log level:  {LOG_LEVEL}')
+
+    # Check output dir writability
+    try:
+        test_path(DEFAULT_OUTPUT_DIR)
+        log_info(f'  Output dir: writable')
+    except Exception as e:
+        log_info(f'  Output dir: NOT writable ({e})')
+
+    # Check yt-dlp
+    ytdlp = check_ytdlp()
+    log_info(f'  yt-dlp:     {"available" if ytdlp else "not found"}')
+
+
 def main():
     global _token, _seen_ids
 
@@ -182,10 +241,18 @@ def main():
     os.makedirs(DEFAULT_OUTPUT_DIR, exist_ok=True)
     _seen_ids = load_seen_ids(DEFAULT_OUTPUT_DIR)
 
-    server = HTTPServer((BIND_HOST, BIND_PORT), DaemonHandler)
+    _log_startup_diagnostics()
+    log_info(f'  Seen IDs:   {len(_seen_ids)} loaded')
+
+    try:
+        server = HTTPServer((BIND_HOST, BIND_PORT), DaemonHandler)
+    except OSError as e:
+        log_info(f'FATAL: Cannot bind to {BIND_HOST}:{BIND_PORT} — {e}')
+        log_info(f'  Is another instance already running?')
+        sys.exit(1)
 
     def shutdown(signum, frame):
-        print(f'Received signal {signum}, shutting down...', file=sys.stderr)
+        log_info(f'Received signal {signum}, shutting down...')
         server.shutdown()
 
     signal.signal(signal.SIGINT, shutdown)
@@ -194,7 +261,7 @@ def main():
     else:
         signal.signal(signal.SIGTERM, shutdown)
 
-    print(f'xTap daemon v{VERSION} listening on {BIND_HOST}:{BIND_PORT}', file=sys.stderr)
+    log_info(f'Listening on {BIND_HOST}:{BIND_PORT}')
     server.serve_forever()
 
 

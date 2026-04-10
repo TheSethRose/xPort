@@ -1,4 +1,5 @@
 const statusEl = document.getElementById('status');
+const transportErrorEl = document.getElementById('transport-error');
 const sessionEl = document.getElementById('session-count');
 const alltimeEl = document.getElementById('alltime-count');
 const toggleBtn = document.getElementById('toggle');
@@ -14,12 +15,16 @@ function render(state) {
   alltimeEl.textContent = state.allTimeCount.toLocaleString();
 
   if (state.connected) {
-    const mode = state.transport === 'http' ? ' (HTTP daemon)' : ' (Native host)';
-    statusEl.textContent = 'Saving to disk' + mode;
+    statusEl.textContent = 'Saving to disk';
     statusEl.className = 'status connected';
+    transportErrorEl.style.display = 'none';
   } else {
     statusEl.textContent = 'Not connected';
     statusEl.className = 'status disconnected';
+    if (state.transportError) {
+      transportErrorEl.textContent = state.transportError;
+      transportErrorEl.style.display = '';
+    }
   }
 
   if (state.captureEnabled) {
@@ -186,3 +191,4 @@ document.getElementById('open-debug').addEventListener('click', () => {
 });
 
 refresh();
+setInterval(refresh, 2000);
