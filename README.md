@@ -207,6 +207,8 @@ After updating the extension files:
 2. Reload the extension in your browser extension manager
 3. Hard-reload any open X tabs (`Cmd+Shift+R` / `Ctrl+Shift+R`)
 
+**From versions before v0.20.0 on macOS/Linux:** Re-running `install.sh` is **required** — the native messaging manifest now points to a wrapper script (`~/.xtap/xtap_host_wrapper.sh`) that uses an absolute Python path, fixing native host launch failures on macOS where Chrome's minimal environment couldn't find `python3`.
+
 **From versions before v0.19.0:** The native messaging host (`xtap_host.py`) no longer handles tweet writing — all data now flows through the HTTP daemon exclusively. Re-running `install.sh` is required to update the daemon's service configuration (adds `XTAP_LOG_LEVEL` support). The extension will show a red "!" badge if the daemon is not running, instead of silently falling back to native messaging.
 
 **From versions before v0.13.0 on macOS:** Re-running `install.sh` is **required** for video download support — the daemon needs an updated launchd configuration to find yt-dlp on your PATH.
@@ -250,7 +252,7 @@ If the extension shows "Not connected" or a red "!" badge:
    # Firefox (macOS):
    cat ~/Library/Application\ Support/Mozilla/NativeMessagingHosts/com.xtap.host.json
    ```
-   The `path` field should point to `xtap_host.py` in your xTap directory.
+   The `path` field should point to `~/.xtap/xtap_host_wrapper.sh` (macOS/Linux) or `xtap_host.bat` (Windows). The wrapper uses an absolute Python path so native messaging works even in Chrome's minimal environment. If it still points directly at `xtap_host.py`, re-run `install.sh`.
 
 ## Configuration
 
