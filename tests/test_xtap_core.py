@@ -340,7 +340,20 @@ class TestTestPath:
 
     def test_no_leftover_file(self, tmp_path):
         xtap_core.test_path(str(tmp_path))
-        assert not (tmp_path / '.xtap-write-test').exists()
+        leftover = [f for f in os.listdir(str(tmp_path)) if f.startswith('.xtap-write-test')]
+        assert leftover == [], f'Sentinel not cleaned up: {leftover}'
+
+    def test_cleanup_tolerates_missing_sentinel(self, tmp_path, monkeypatch):
+        """test_path should not raise if the sentinel is already removed (race)."""
+        original_remove = os.remove
+
+        def remove_twice(path):
+            original_remove(path)
+            # Simulate a concurrent removal — file is already gone
+            original_remove(path)
+
+        monkeypatch.setattr(os, 'remove', remove_twice)
+        xtap_core.test_path(str(tmp_path))  # should not raise
 
 
 # ---------------------------------------------------------------------------
