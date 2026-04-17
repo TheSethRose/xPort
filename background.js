@@ -1,5 +1,6 @@
 // xTap — Service Worker (background)
 import { extractTweets } from './lib/tweet-parser.js';
+import { dedupTweet } from './lib/dedup.js';
 
 const NATIVE_HOST = 'com.xtap.host';
 const BATCH_SIZE = 50;
@@ -58,7 +59,7 @@ async function restoreState() {
     seenIdsStorage().get(['seenIds']),
     chrome.storage.local.get(['allTimeCount', 'captureEnabled', 'outputDir', 'debugLogging', 'verboseLogging']),
   ]);
-  if (seenStored.seenIds) seenIds = new Set(seenStored.seenIds);
+  if (seenStored.seenIds) seenIds = new Set(seenStored.seenIds.filter(Boolean));
   if (typeof stored.allTimeCount === 'number') allTimeCount = stored.allTimeCount;
   if (typeof stored.captureEnabled === 'boolean') captureEnabled = stored.captureEnabled;
   if (typeof stored.outputDir === 'string') outputDir = stored.outputDir;
@@ -357,12 +358,10 @@ function enqueueTweets(tweets, endpoint = 'unknown') {
       }
     }
 
-    // Article tweets bypass dedup — they enrich a previously captured stub
-    if (seenIds.has(tweet.id) && !tweet.is_article) {
+    if (!dedupTweet(tweet, seenIds)) {
       emitTraceEvent({ timestamp: Date.now(), endpoint, tweetId: tweet.id, status: 'DEDUPLICATED', reason: 'seenIds' });
       continue;
     }
-    seenIds.add(tweet.id);
     buffer.push(tweet);
     newCount++;
     emitTraceEvent({ timestamp: Date.now(), endpoint, tweetId: tweet.id, status: 'ACCEPTED', reason: null });
