@@ -170,23 +170,24 @@ class TestResolveOutputDir:
         result = xtap_core.resolve_output_dir(None, default, set(), set())
         assert result == default
 
-    def test_custom_dir_created(self, tmp_path):
+    def test_custom_dir_created(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(xtap_core, '_ALLOWED_ROOTS', (os.path.realpath(str(tmp_path)),))
         custom = str(tmp_path / 'custom')
         seen = set()
         custom_dirs = set()
         result = xtap_core.resolve_output_dir(custom, '/default', seen, custom_dirs)
-        assert result == custom
-        assert os.path.isdir(custom)
-        assert custom in custom_dirs
+        assert os.path.realpath(result) == os.path.realpath(custom)
+        assert os.path.isdir(result)
 
-    def test_custom_dir_no_reload(self, tmp_path):
+    def test_custom_dir_no_reload(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(xtap_core, '_ALLOWED_ROOTS', (os.path.realpath(str(tmp_path)),))
         custom = str(tmp_path / 'custom')
         os.makedirs(custom)
         seen = set()
         custom_dirs = set()
         # First call adds to custom_dirs
-        xtap_core.resolve_output_dir(custom, '/default', seen, custom_dirs)
-        assert custom in custom_dirs
+        result = xtap_core.resolve_output_dir(custom, '/default', seen, custom_dirs)
+        assert result in custom_dirs
         # Second call — custom_dirs already has it, load_seen_ids not called again
         old_size = len(custom_dirs)
         xtap_core.resolve_output_dir(custom, '/default', seen, custom_dirs)
@@ -202,7 +203,8 @@ class TestResolveOutputDir:
         if os.path.isdir(expected):
             os.rmdir(expected)
 
-    def test_custom_dir_loads_seen_ids(self, tmp_path):
+    def test_custom_dir_loads_seen_ids(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(xtap_core, '_ALLOWED_ROOTS', (os.path.realpath(str(tmp_path)),))
         custom = str(tmp_path / 'custom')
         os.makedirs(custom)
         (tmp_path / 'custom' / 'tweets-2024-01-15.jsonl').write_text(
@@ -212,6 +214,46 @@ class TestResolveOutputDir:
         custom_dirs = set()
         xtap_core.resolve_output_dir(custom, '/default', seen, custom_dirs)
         assert '999' in seen
+
+
+# ---------------------------------------------------------------------------
+# validate_output_dir
+# ---------------------------------------------------------------------------
+
+
+class TestValidateOutputDir:
+
+    def test_path_under_home_allowed(self):
+        home = os.path.expanduser('~')
+        result = xtap_core.validate_output_dir(os.path.join(home, 'some', 'subdir'))
+        assert result.startswith(os.path.realpath(home))
+
+    def test_home_itself_allowed(self):
+        home = os.path.expanduser('~')
+        result = xtap_core.validate_output_dir(home)
+        assert result == os.path.realpath(home)
+
+    def test_traversal_outside_home_rejected(self):
+        with pytest.raises(ValueError, match='outside allowed directories'):
+            xtap_core.validate_output_dir('/etc/cron.d/evil')
+
+    def test_dot_dot_traversal_rejected(self):
+        home = os.path.expanduser('~')
+        with pytest.raises(ValueError, match='outside allowed directories'):
+            # Enough '..' to escape home
+            xtap_core.validate_output_dir(os.path.join(home, '..', '..', 'tmp', 'pwned'))
+
+    def test_absolute_path_outside_home_rejected(self):
+        with pytest.raises(ValueError, match='outside allowed directories'):
+            xtap_core.validate_output_dir('/tmp/pwned')
+
+    def test_resolve_output_dir_rejects_traversal(self):
+        with pytest.raises(ValueError, match='outside allowed directories'):
+            xtap_core.resolve_output_dir('/etc/evil', '/default', set(), set())
+
+    def test_default_output_dir_allowed(self):
+        result = xtap_core.validate_output_dir(xtap_core.DEFAULT_OUTPUT_DIR)
+        assert result == os.path.realpath(xtap_core.DEFAULT_OUTPUT_DIR)
 
 
 # ---------------------------------------------------------------------------
@@ -256,6 +298,30 @@ class TestWriteDump:
         xtap_core.write_dump('test.json', 'old', str(tmp_path))
         xtap_core.write_dump('test.json', 'new', str(tmp_path))
         assert (tmp_path / 'test.json').read_text() == 'new'
+
+    def test_traversal_filename_stripped(self, tmp_path):
+        path = xtap_core.write_dump('../../.ssh/authorized_keys', 'data', str(tmp_path))
+        # Traversal stripped — writes to out_dir/authorized_keys
+        assert path == os.path.join(str(tmp_path), 'authorized_keys')
+        assert (tmp_path / 'authorized_keys').read_text() == 'data'
+
+    def test_absolute_filename_stripped(self, tmp_path):
+        path = xtap_core.write_dump('/etc/cron.d/evil', 'data', str(tmp_path))
+        # Should write to out_dir/evil, not /etc/cron.d/evil
+        assert path == os.path.join(str(tmp_path), 'evil')
+        assert (tmp_path / 'evil').read_text() == 'data'
+
+    def test_empty_filename_rejected(self, tmp_path):
+        with pytest.raises(ValueError, match='Invalid dump filename'):
+            xtap_core.write_dump('', 'data', str(tmp_path))
+
+    def test_dot_filename_rejected(self, tmp_path):
+        with pytest.raises(ValueError, match='Invalid dump filename'):
+            xtap_core.write_dump('.', 'data', str(tmp_path))
+
+    def test_dotdot_filename_rejected(self, tmp_path):
+        with pytest.raises(ValueError, match='Invalid dump filename'):
+            xtap_core.write_dump('..', 'data', str(tmp_path))
 
 
 # ---------------------------------------------------------------------------
