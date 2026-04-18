@@ -17,7 +17,7 @@ from xtap_core import (DEFAULT_OUTPUT_DIR, load_seen_ids, resolve_output_dir,
                        write_dump, test_path,
                        check_ytdlp, start_download, get_download_status)
 
-VERSION = '0.19.1'
+VERSION = '0.2.0'
 BIND_HOST = '127.0.0.1'
 BIND_PORT = 17381
 MAX_BODY_SIZE = 10 * 1024 * 1024  # 10 MB
