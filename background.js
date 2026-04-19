@@ -221,7 +221,10 @@ function makeTimeoutSignal(ms) {
 
 async function probeHttp(port, token) {
   try {
+    const headers = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
     const resp = await fetch(`http://127.0.0.1:${port}/status`, {
+      headers,
       signal: makeTimeoutSignal(3000)
     });
     const data = await resp.json();
@@ -393,6 +396,20 @@ async function reprobeTransport() {
       await chrome.storage.local.set({ httpToken, httpPort });
       updateBadge();
       console.log('[xTap] HTTP daemon recovered (fresh token)');
+      return true;
+    }
+  }
+  // Fallback: check chrome.storage.local (token may have been written by
+  // a prior session or injected externally for testing)
+  const stored = await chrome.storage.local.get(['httpToken', 'httpPort']);
+  if (stored.httpToken && stored.httpPort) {
+    const alive = await probeHttp(stored.httpPort, stored.httpToken);
+    if (alive) {
+      httpToken = stored.httpToken;
+      httpPort = stored.httpPort;
+      transport = 'http';
+      updateBadge();
+      console.log('[xTap] HTTP daemon recovered (stored token)');
       return true;
     }
   }
