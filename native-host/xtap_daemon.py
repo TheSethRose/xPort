@@ -15,9 +15,10 @@ from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from xtap_core import (DEFAULT_OUTPUT_DIR, load_seen_ids, resolve_output_dir,
                        validate_output_dir, write_tweets, write_log,
                        write_dump, test_path,
-                       check_ytdlp, start_download, get_download_status)
+                       check_ytdlp, start_download, get_download_status,
+                       collect_image_jobs, get_image_downloader)
 
-VERSION = '0.22.0'
+VERSION = '0.23.0'
 BIND_HOST = '127.0.0.1'
 BIND_PORT = int(os.environ.get('XTAP_DAEMON_PORT', 17381))
 MAX_BODY_SIZE = 10 * 1024 * 1024  # 10 MB
@@ -150,12 +151,23 @@ class DaemonHandler(BaseHTTPRequestHandler):
     def _handle_tweets(self, body):
         try:
             msg_dir = body.get('outputDir', '').strip()
+            # Strict boolean: only `true` enables. Avoids string 'false' / number 1
+            # silently turning the feature on.
+            image_download = body.get('image_download') is True
             with _state_lock:
                 out_dir = resolve_output_dir(msg_dir, DEFAULT_OUTPUT_DIR, _seen_ids, _custom_dirs)
                 tweets = body.get('tweets', [])
+                # Compute jobs only when we'll actually fetch — collect_image_jobs
+                # may strip unsafe article local_paths from the tweets, so we
+                # must call it before write_tweets to keep the JSONL clean.
+                pending_images = collect_image_jobs(tweets, out_dir) if image_download else []
                 count, dupes = write_tweets(tweets, out_dir, _seen_ids)
-            log_debug(f'  Tweets: {count} written, {dupes} dupes -> {out_dir}')
-            self._send_json({'ok': True, 'count': count, 'dupes': dupes})
+            queued = 0
+            if pending_images:
+                get_image_downloader().enqueue(pending_images, out_dir)
+                queued = len(pending_images)
+            log_debug(f'  Tweets: {count} written, {dupes} dupes, {queued} images queued -> {out_dir}')
+            self._send_json({'ok': True, 'count': count, 'dupes': dupes, 'images_queued': queued})
         except ValueError as e:
             self._send_json({'ok': False, 'error': str(e)}, 400)
         except Exception as e:
