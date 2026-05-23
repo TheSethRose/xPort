@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""xTap HTTP Daemon — runs as a system service (launchd/systemd/Scheduled Task)."""
+"""XPort HTTP Daemon — runs as a system service (launchd/systemd/Scheduled Task)."""
 
 import hmac
 import json
@@ -12,21 +12,22 @@ import uuid
 import threading
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
-from xtap_core import (DEFAULT_OUTPUT_DIR, load_seen_ids, resolve_output_dir,
+from xport_core import (DEFAULT_OUTPUT_DIR, load_seen_ids, resolve_output_dir,
                        validate_output_dir, write_tweets, write_log,
                        write_dump, test_path,
                        check_ytdlp, start_download, get_download_status,
-                       collect_image_jobs, get_image_downloader)
+                       collect_image_jobs, get_image_downloader,
+                       forward_tweets_to_api)
 
 VERSION = '0.23.1'
 BIND_HOST = '127.0.0.1'
-BIND_PORT = int(os.environ.get('XTAP_DAEMON_PORT', 17381))
+BIND_PORT = int(os.environ.get('XPORT_DAEMON_PORT', 17381))
 MAX_BODY_SIZE = 10 * 1024 * 1024  # 10 MB
-XTAP_DIR = os.path.expanduser('~/.xtap')
-XTAP_SECRET = os.path.join(XTAP_DIR, 'secret')
+XPORT_DIR = os.path.expanduser('~/.xport')
+XPORT_SECRET = os.path.join(XPORT_DIR, 'secret')
 
 # Log level: 'info' (default) or 'debug'
-LOG_LEVEL = os.environ.get('XTAP_LOG_LEVEL', 'info').lower()
+LOG_LEVEL = os.environ.get('XPORT_LOG_LEVEL', 'info').lower()
 
 
 def log_info(msg):
@@ -40,10 +41,10 @@ def log_debug(msg):
 
 def load_token():
     try:
-        with open(XTAP_SECRET, 'r') as f:
+        with open(XPORT_SECRET, 'r') as f:
             return f.read().strip()
     except FileNotFoundError:
-        log_info(f'FATAL: {XTAP_SECRET} not found. Run install.sh first.')
+        log_info(f'FATAL: {XPORT_SECRET} not found. Run install.sh first.')
         sys.exit(1)
 
 
@@ -166,8 +167,18 @@ class DaemonHandler(BaseHTTPRequestHandler):
             if pending_images:
                 get_image_downloader().enqueue(pending_images, out_dir)
                 queued = len(pending_images)
+            forward = forward_tweets_to_api(tweets if count else [])
             log_debug(f'  Tweets: {count} written, {dupes} dupes, {queued} images queued -> {out_dir}')
-            self._send_json({'ok': True, 'count': count, 'dupes': dupes, 'images_queued': queued})
+            response = {'ok': True, 'count': count, 'dupes': dupes, 'images_queued': queued}
+            if forward.get('enabled'):
+                response['forwarded'] = forward.get('ok') is True
+                if forward.get('ok'):
+                    response['remote_count'] = forward.get('count')
+                    response['remote_batch_id'] = forward.get('batch_id')
+                else:
+                    response['remote_error'] = forward.get('error')
+                    log_info(f'WARN /tweets remote forward failed: {forward.get("error")}')
+            self._send_json(response)
         except ValueError as e:
             self._send_json({'ok': False, 'error': str(e)}, 400)
         except Exception as e:
@@ -259,16 +270,16 @@ def _setup_stdio():
     """Redirect stdio to log files when running under pythonw (no console)."""
     if sys.stderr is not None and sys.stdout is not None:
         return
-    os.makedirs(XTAP_DIR, exist_ok=True)
+    os.makedirs(XPORT_DIR, exist_ok=True)
     if sys.stdout is None:
-        sys.stdout = open(os.path.join(XTAP_DIR, 'daemon-stdout.log'), 'a')
+        sys.stdout = open(os.path.join(XPORT_DIR, 'daemon-stdout.log'), 'a')
     if sys.stderr is None:
-        sys.stderr = open(os.path.join(XTAP_DIR, 'daemon-stderr.log'), 'a')
+        sys.stderr = open(os.path.join(XPORT_DIR, 'daemon-stderr.log'), 'a')
 
 
 def _log_startup_diagnostics():
     """Log system and configuration info on startup."""
-    log_info(f'xTap daemon v{VERSION}')
+    log_info(f'XPort daemon v{VERSION}')
     log_info(f'  Python:     {sys.version.split(chr(10))[0]}')
     log_info(f'  Executable: {sys.executable}')
     log_info(f'  Script:     {os.path.abspath(__file__)}')

@@ -1,0 +1,4 @@
+XPort is derived from mkubicek/xTap.
+
+The upstream project is MIT licensed. XPort keeps that license while changing
+the product identity and adding hosted PostgreSQL ingestion.

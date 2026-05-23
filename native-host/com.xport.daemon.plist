@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.xtap.daemon</string>
+    <string>com.xport.daemon</string>
     <key>ProgramArguments</key>
     <array>
         <string>__PYTHON_PATH__</string>
@@ -15,16 +15,20 @@
         <string>__HOME_DIR__</string>
         <key>PATH</key>
         <string>__PATH__</string>
-        <key>XTAP_LOG_LEVEL</key>
+        <key>XPORT_LOG_LEVEL</key>
         <string>__LOG_LEVEL__</string>
+        <key>XPORT_API_URL</key>
+        <string>__API_URL__</string>
+        <key>XPORT_INGEST_TOKEN</key>
+        <string>__INGEST_TOKEN__</string>
     </dict>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>__HOME_DIR__/.xtap/daemon-stdout.log</string>
+    <string>__HOME_DIR__/.xport/daemon-stdout.log</string>
     <key>StandardErrorPath</key>
-    <string>__HOME_DIR__/.xtap/daemon-stderr.log</string>
+    <string>__HOME_DIR__/.xport/daemon-stderr.log</string>
 </dict>
 </plist>

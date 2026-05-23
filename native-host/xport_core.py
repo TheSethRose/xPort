@@ -1,4 +1,4 @@
-"""xTap Core — shared file I/O logic used by both native host and HTTP daemon."""
+"""XPort Core — shared file I/O logic used by both native host and HTTP daemon."""
 
 import glob
 import json
@@ -16,10 +16,12 @@ from datetime import date, datetime, timezone
 from urllib.parse import urlparse
 
 
-DEFAULT_OUTPUT_DIR = os.environ.get('XTAP_OUTPUT_DIR', os.path.expanduser('~/Downloads/xtap'))
+DEFAULT_OUTPUT_DIR = os.environ.get('XPORT_OUTPUT_DIR', os.path.expanduser('~/Downloads/xport'))
+DEFAULT_API_URL = os.environ.get('XPORT_API_URL', '').rstrip('/')
+DEFAULT_INGEST_TOKEN = os.environ.get('XPORT_INGEST_TOKEN', '')
 
 # Allowed roots for outputDir validation: user's home + DEFAULT_OUTPUT_DIR
-# (the latter covers XTAP_OUTPUT_DIR pointing outside home, e.g. /data/xtap)
+# (the latter covers XPORT_OUTPUT_DIR pointing outside home, e.g. /data/xport)
 _ALLOWED_ROOTS = tuple(dict.fromkeys([
     os.path.realpath(os.path.expanduser('~')),
     os.path.realpath(DEFAULT_OUTPUT_DIR),
@@ -100,6 +102,51 @@ def write_tweets(tweets, out_dir, seen_ids):
     return count, dupes
 
 
+def forward_tweets_to_api(tweets, source='xport-daemon'):
+    """Forward a captured tweet batch to the hosted XPort API when configured."""
+    api_url = DEFAULT_API_URL
+    token = DEFAULT_INGEST_TOKEN
+    if not api_url or not token:
+        return {'enabled': False}
+    if not isinstance(tweets, list) or not tweets:
+        return {'enabled': True, 'ok': True, 'count': 0}
+
+    timeout = _env_float('XPORT_API_TIMEOUT_SECONDS', 5.0)
+    retries = max(0, _env_int('XPORT_API_RETRIES', 2))
+    endpoint = f'{api_url}/api/ingest/tweets'
+    body = json.dumps({'source': source, 'tweets': tweets}, ensure_ascii=False).encode('utf-8')
+    last_error = None
+
+    for attempt in range(retries + 1):
+        req = urllib.request.Request(endpoint, data=body, method='POST')
+        req.add_header('Content-Type', 'application/json')
+        req.add_header('Authorization', f'Bearer {token}')
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                payload = json.loads(resp.read() or b'{}')
+                if 200 <= resp.status < 300 and payload.get('ok') is True:
+                    return {
+                        'enabled': True,
+                        'ok': True,
+                        'count': payload.get('upserted', payload.get('count')),
+                        'batch_id': payload.get('batch_id'),
+                    }
+                last_error = f'HTTP {resp.status}: {payload}'
+        except urllib.error.HTTPError as e:
+            try:
+                details = e.read().decode('utf-8', errors='replace')
+            except Exception:
+                details = ''
+            last_error = f'HTTP {e.code}: {details}'
+        except Exception as e:
+            last_error = str(e)
+
+        if attempt < retries:
+            time.sleep(min(2 ** attempt, 5))
+
+    return {'enabled': True, 'ok': False, 'error': last_error or 'forward failed'}
+
+
 def write_log(lines, out_dir):
     """Append debug log lines to daily log file. Returns logged count."""
     log_file = os.path.join(out_dir, f'debug-{date.today().isoformat()}.log')
@@ -124,7 +171,7 @@ def write_dump(filename, content, out_dir):
 def test_path(out_dir):
     """Test that we can write to the output directory. Raises on failure."""
     os.makedirs(out_dir, exist_ok=True)
-    test_file = os.path.join(out_dir, f'.xtap-write-test-{threading.get_ident()}')
+    test_file = os.path.join(out_dir, f'.xport-write-test-{threading.get_ident()}')
     try:
         with open(test_file, 'w') as f:
             f.write('ok')
@@ -375,7 +422,7 @@ def _env_int(name, default):
     try:
         return int(raw)
     except ValueError:
-        print(f'[xtap:image] invalid {name}={raw!r}, using {default}', file=sys.stderr)
+        print(f'[xport:image] invalid {name}={raw!r}, using {default}', file=sys.stderr)
         return default
 
 
@@ -386,7 +433,7 @@ def _env_float(name, default):
     try:
         return float(raw)
     except ValueError:
-        print(f'[xtap:image] invalid {name}={raw!r}, using {default}', file=sys.stderr)
+        print(f'[xport:image] invalid {name}={raw!r}, using {default}', file=sys.stderr)
         return default
 
 
@@ -525,30 +572,30 @@ class ImageDownloader:
       and log status='exists'.
     - URL hostname is checked against ALLOWED_IMAGE_HOSTS before every request.
       Redirects are blocked entirely (so an attacker can't 302 us off-allowlist).
-    - Per-file size cap (XTAP_MAX_FILE_MB, default 50) bounds disk impact even
-      for adversarial responses. Optional cumulative cap via XTAP_MAX_MEDIA_MB.
+    - Per-file size cap (XPORT_MAX_FILE_MB, default 50) bounds disk impact even
+      for adversarial responses. Optional cumulative cap via XPORT_MAX_MEDIA_MB.
     - 429 responses trigger exponential backoff (capped at MAX_BACKOFF_S).
       Other HTTP errors and network failures log status='error'.
     """
 
     DEFAULT_DELAY_MS = 100
     DEFAULT_MAX_FILE_MB = 50
-    USER_AGENT = 'xTap/1.0 (+https://github.com/mkubicek/xTap)'
+    USER_AGENT = 'XPort/1.0 (+https://github.com/TheSethRose/xPort)'
     MAX_BACKOFF_S = 30
     REQUEST_TIMEOUT_S = 30
     CHUNK_SIZE = 64 * 1024
 
     def __init__(self):
         self.queue = queue.Queue()
-        self.delay_s = max(0.0, _env_int('XTAP_IMAGE_DELAY_MS', self.DEFAULT_DELAY_MS) / 1000.0)
-        max_total_mb = _env_float('XTAP_MAX_MEDIA_MB', 0.0)
+        self.delay_s = max(0.0, _env_int('XPORT_IMAGE_DELAY_MS', self.DEFAULT_DELAY_MS) / 1000.0)
+        max_total_mb = _env_float('XPORT_MAX_MEDIA_MB', 0.0)
         self.max_bytes = int(max_total_mb * 1024 * 1024) if max_total_mb > 0 else None
-        max_file_mb = _env_float('XTAP_MAX_FILE_MB', float(self.DEFAULT_MAX_FILE_MB))
+        max_file_mb = _env_float('XPORT_MAX_FILE_MB', float(self.DEFAULT_MAX_FILE_MB))
         self.max_file_bytes = int(max_file_mb * 1024 * 1024) if max_file_mb > 0 else None
         self._bytes_lock = threading.Lock()
         self.bytes_downloaded = 0
         self._last_request_at = 0.0
-        self._thread = threading.Thread(target=self._run, daemon=True, name='xtap-image-downloader')
+        self._thread = threading.Thread(target=self._run, daemon=True, name='xport-image-downloader')
         self._thread.start()
 
     def enqueue(self, jobs, out_dir):
@@ -565,7 +612,7 @@ class ImageDownloader:
             try:
                 self._process(job, out_dir)
             except Exception as e:  # pragma: no cover — defensive
-                print(f'[xtap:image] worker exception: {e}', file=sys.stderr)
+                print(f'[xport:image] worker exception: {e}', file=sys.stderr)
             finally:
                 self.queue.task_done()
 
@@ -674,7 +721,7 @@ class ImageDownloader:
             with open(manifest_path, 'a') as f:
                 f.write(json.dumps(entry, ensure_ascii=False) + '\n')
         except OSError as e:
-            print(f'[xtap:image] manifest write failed: {e}', file=sys.stderr)
+            print(f'[xport:image] manifest write failed: {e}', file=sys.stderr)
 
 
 def _is_allowed_url(url):

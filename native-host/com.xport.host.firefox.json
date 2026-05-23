@@ -1,0 +1,7 @@
+{
+  "name": "com.xport.host",
+  "description": "XPort native messaging host — writes captured tweets to JSONL",
+  "path": "/path/to/xport_host.py",
+  "type": "stdio",
+  "allowed_extensions": ["xport@sethrose.dev"]
+}

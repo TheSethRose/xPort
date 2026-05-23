@@ -3,7 +3,7 @@
  * fake-x.js — Tiny HTTPS Fake X replay server for E2E testing.
  *
  * Serves a minimal page that triggers a GraphQL fetch, and returns
- * fixture-backed responses so the real xTap extension captures them.
+ * fixture-backed responses so the real XPort extension captures them.
  *
  * Usage:
  *   node tests/e2e/fake-x.js [--port 4443] [--fixture-dir path]
@@ -79,7 +79,7 @@ const PAGE_HTML = `<!DOCTYPE html>
   <main role="main"><div>Timeline placeholder</div></main>
 </div>
 <script>
-// Issue a GraphQL fetch that the real xTap extension will intercept.
+// Issue a GraphQL fetch that the real XPort extension will intercept.
 // The URL shape must contain /i/api/graphql/ so content-main.js picks it up.
 fetch('/i/api/graphql/FakeReplayHash/${fixtureEndpoint}?variables=%7B%7D&features=%7B%7D', {
   method: 'POST',
@@ -87,8 +87,8 @@ fetch('/i/api/graphql/FakeReplayHash/${fixtureEndpoint}?variables=%7B%7D&feature
   body: JSON.stringify({ variables: {}, features: {} })
 })
   .then(function(r) { return r.json(); })
-  .then(function() { document.title = 'xTap:loaded'; })
-  .catch(function(e) { document.title = 'xTap:error'; console.error('[fake-x]', e); });
+  .then(function() { document.title = 'XPort:loaded'; })
+  .catch(function(e) { document.title = 'XPort:error'; console.error('[fake-x]', e); });
 </script>
 </body>
 </html>`;

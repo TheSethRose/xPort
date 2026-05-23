@@ -2,7 +2,7 @@
 /**
  * golden-jsonl-test.js — End-to-end golden-path JSONL assertion.
  *
- * Runs the full xTap pipeline offline:
+ * Runs the full XPort pipeline offline:
  *   Fake X (HTTPS) → real extension → HTTP daemon → JSONL on disk
  *
  * Note: Playwright's bundled Chromium does not support native messaging, so
@@ -214,8 +214,8 @@ function compareJsonl(actual, expected) {
 
 async function run() {
   // 1. Create an isolated output directory under $HOME (passes daemon validation)
-  mkdirSync(join(homedir(), '.xtap'), { recursive: true });
-  const outputDir = mkdtempSync(join(homedir(), '.xtap', 'e2e-output-'));
+  mkdirSync(join(homedir(), '.xport'), { recursive: true });
+  const outputDir = mkdtempSync(join(homedir(), '.xport', 'e2e-output-'));
   log(`Output dir: ${outputDir}`);
 
   // All setup steps live inside try so that teardown runs even if setup
@@ -228,8 +228,8 @@ async function run() {
   let passed = false;
   try {
     // 2. Tell the daemon to use our output dir and E2E port, then bootstrap
-    process.env.XTAP_OUTPUT_DIR = outputDir;
-    process.env.XTAP_DAEMON_PORT = String(E2E_DAEMON_PORT);
+    process.env.XPORT_OUTPUT_DIR = outputDir;
+    process.env.XPORT_DAEMON_PORT = String(E2E_DAEMON_PORT);
     log('Running native-host bootstrap...');
     bootstrapRan = true;  // set before --setup so teardown runs on partial failure
     execSync(`node "${BOOTSTRAP}" --setup`, { stdio: 'inherit' });
@@ -238,7 +238,7 @@ async function run() {
     buildExtension();
 
     // 4. Create temp Chrome user-data dir
-    userDataDir = mkdtempSync(join(tmpdir(), 'xtap-e2e-'));
+    userDataDir = mkdtempSync(join(tmpdir(), 'xport-e2e-'));
 
     // 5. Launch Chromium with the extension
     const launchArgs = [
@@ -264,14 +264,14 @@ async function run() {
     context.on('serviceworker', sw => {
       sw.on('console', msg => {
         const text = msg.text();
-        if (text.includes('[xTap]')) log(`SW: ${text}`);
+        if (text.includes('[XPort]')) log(`SW: ${text}`);
       });
     });
     // Also capture already-registered workers
     for (const sw of context.serviceWorkers()) {
       sw.on('console', msg => {
         const text = msg.text();
-        if (text.includes('[xTap]')) log(`SW: ${text}`);
+        if (text.includes('[XPort]')) log(`SW: ${text}`);
       });
     }
 
@@ -286,7 +286,7 @@ async function run() {
     });
     log('Extension loaded');
 
-    const token = readFileSync(join(homedir(), '.xtap', 'secret'), 'utf8').trim();
+    const token = readFileSync(join(homedir(), '.xport', 'secret'), 'utf8').trim();
     await extPage.evaluate(async ({ token, port }) => {
       await chrome.storage.local.set({ httpToken: token, httpPort: port });
     }, { token, port: E2E_DAEMON_PORT });
@@ -307,11 +307,11 @@ async function run() {
       });
 
       await page.waitForFunction(
-        () => document.title === 'xTap:loaded' || document.title === 'xTap:error',
+        () => document.title === 'XPort:loaded' || document.title === 'XPort:error',
         { timeout: 15_000 },
       );
       const title = await page.title();
-      if (title !== 'xTap:loaded') {
+      if (title !== 'XPort:loaded') {
         throw new Error(
           `[${scenario.name}] Page title is "${title}" — extension interception failed`,
         );

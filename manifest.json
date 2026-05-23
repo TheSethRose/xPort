@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "xTap",
+  "name": "XPort",
   "version": "0.23.1",
   "description": "Passively captures tweets from X/Twitter as you browse",
   "permissions": ["storage", "nativeMessaging"],

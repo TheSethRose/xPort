@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""xTap Native Messaging Host — token bootstrap for the Chrome/Firefox extension.
+"""XPort Native Messaging Host — token bootstrap for the Chrome/Firefox extension.
 
 This minimal host exists solely to pass the HTTP daemon's auth token to the
 browser extension via native messaging.  All tweet/log/dump I/O goes through
-the HTTP daemon (xtap_daemon.py).
+the HTTP daemon (xport_daemon.py).
 """
 
 import json
@@ -13,10 +13,10 @@ import sys
 import traceback
 from datetime import datetime
 
-XTAP_PORT = int(os.environ.get('XTAP_DAEMON_PORT', 17381))
-XTAP_DIR = os.path.expanduser('~/.xtap')
-XTAP_SECRET = os.path.join(XTAP_DIR, 'secret')
-XTAP_ERROR_LOG = os.path.join(XTAP_DIR, 'host-error.log')
+XPORT_PORT = int(os.environ.get('XPORT_DAEMON_PORT', 17381))
+XPORT_DIR = os.path.expanduser('~/.xport')
+XPORT_SECRET = os.path.join(XPORT_DIR, 'secret')
+XPORT_ERROR_LOG = os.path.join(XPORT_DIR, 'host-error.log')
 
 MAX_MESSAGE_BYTES = 1 * 1024 * 1024  # 1 MiB guard
 
@@ -63,11 +63,11 @@ def _main():
 
         if msg.get('type') == 'GET_TOKEN':
             try:
-                with open(XTAP_SECRET, 'r') as f:
+                with open(XPORT_SECRET, 'r') as f:
                     token = f.read().strip()
-                send_message({'ok': True, 'token': token, 'port': XTAP_PORT})
+                send_message({'ok': True, 'token': token, 'port': XPORT_PORT})
             except FileNotFoundError:
-                send_message({'ok': False, 'error': 'Daemon not installed (~/.xtap/secret not found)'})
+                send_message({'ok': False, 'error': 'Daemon not installed (~/.xport/secret not found)'})
             except Exception as e:
                 send_message({'ok': False, 'error': str(e)})
         else:
@@ -82,8 +82,8 @@ def main():
     try:
         _main()
     except Exception:
-        os.makedirs(XTAP_DIR, exist_ok=True)
-        with open(XTAP_ERROR_LOG, 'a') as f:
+        os.makedirs(XPORT_DIR, exist_ok=True)
+        with open(XPORT_ERROR_LOG, 'a') as f:
             f.write(f'\n--- {datetime.now().isoformat()} ---\n')
             f.write(f'Python: {sys.version}\n')
             f.write(f'Script: {os.path.abspath(__file__)}\n')

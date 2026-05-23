@@ -1,8 +1,8 @@
-// xTap — Service Worker (background)
+// XPort — Service Worker (background)
 import { extractTweets } from './lib/tweet-parser.js';
 import { dedupTweet } from './lib/dedup.js';
 
-const NATIVE_HOST = 'com.xtap.host';
+const NATIVE_HOST = 'com.xport.host';
 const BATCH_SIZE = 50;
 const FLUSH_INTERVAL_MS = 30_000;
 const MAX_SEEN_IDS = 50_000;
@@ -67,7 +67,7 @@ async function stagePayload(endpoint, data) {
     await stagingStorage().set({ [key]: { endpoint, data, stagedAt: Date.now() } });
     return key;
   } catch (e) {
-    console.warn('[xTap] Failed to stage payload (quota?):', e.message);
+    console.warn('[XPort] Failed to stage payload (quota?):', e.message);
     emitTraceEvent({ timestamp: Date.now(), endpoint, tweetId: null, status: 'STAGE_FAILED', reason: e.message });
     return null;
   }
@@ -78,7 +78,7 @@ async function clearStagedPayload(key) {
   try {
     await stagingStorage().remove(key);
   } catch (e) {
-    console.warn('[xTap] Failed to clear staged payload:', e.message);
+    console.warn('[XPort] Failed to clear staged payload:', e.message);
   }
 }
 
@@ -87,7 +87,7 @@ async function recoverStagedPayloads() {
   try {
     store = await stagingStorage().get(null);
   } catch (e) {
-    console.warn('[xTap] Failed to read staging storage for recovery:', e.message);
+    console.warn('[XPort] Failed to read staging storage for recovery:', e.message);
     return;
   }
   const keys = Object.keys(store).filter(k => k.startsWith('stg_')).sort((a, b) => {
@@ -117,7 +117,7 @@ async function recoverStagedPayloads() {
         produced = true;
       }
     } catch (e) {
-      console.warn(`[xTap] Recovery parse error for ${key}:`, e.message);
+      console.warn(`[XPort] Recovery parse error for ${key}:`, e.message);
     }
     // Persist buffer before clearing WAL entry — if SW dies mid-recovery,
     // already-cleared entries must have their tweets in durable storage.
@@ -128,7 +128,7 @@ async function recoverStagedPayloads() {
 
   if (recoveredCount > 0) {
     emitTraceEvent({ timestamp: Date.now(), endpoint: 'recovery', tweetId: null, status: 'RECOVERY_COMPLETE', reason: `recovered ${recoveredCount} tweets from ${keys.length} staged payloads` });
-    console.log(`[xTap] Recovery: ${recoveredCount} tweets from ${keys.length} staged payloads`);
+    console.log(`[XPort] Recovery: ${recoveredCount} tweets from ${keys.length} staged payloads`);
   }
 }
 
@@ -158,7 +158,7 @@ async function _saveStateImpl() {
     }
     return true;
   } catch (e) {
-    console.warn('[xTap] Failed to persist state:', e.message);
+    console.warn('[XPort] Failed to persist state:', e.message);
     return false;
   }
 }
@@ -270,7 +270,7 @@ async function getTokenViaNative() {
     });
     port.onDisconnect.addListener(() => {
       const err = chrome.runtime.lastError;
-      if (err) console.warn('[xTap] Native host disconnected:', err.message);
+      if (err) console.warn('[XPort] Native host disconnected:', err.message);
       finish(null);
     });
     try {
@@ -290,7 +290,7 @@ async function initTransport() {
       httpToken = cached.httpToken;
       httpPort = cached.httpPort;
       transport = 'http';
-      console.log('[xTap] Using HTTP transport (cached token)');
+      console.log('[XPort] Using HTTP transport (cached token)');
       return;
     }
   }
@@ -304,14 +304,14 @@ async function initTransport() {
       httpPort = result.port;
       transport = 'http';
       await chrome.storage.local.set({ httpToken, httpPort });
-      console.log('[xTap] Using HTTP transport (token from native host)');
+      console.log('[XPort] Using HTTP transport (token from native host)');
       return;
     }
   }
 
   // 3. No transport available
   transport = 'none';
-  console.warn('[xTap] No transport available — daemon may not be running');
+  console.warn('[XPort] No transport available — daemon may not be running');
   updateTransportBadge();
 }
 
@@ -319,7 +319,7 @@ async function initTransport() {
 
 async function sendToHost(msg) {
   if (transport !== 'http') {
-    console.warn('[xTap] No transport available, message dropped');
+    console.warn('[XPort] No transport available, message dropped');
     return null;
   }
 
@@ -355,7 +355,7 @@ async function sendToHost(msg) {
   try {
     return await httpFetch('POST', path, body);
   } catch (e) {
-    console.error('[xTap] HTTP send failed:', e.message);
+    console.error('[XPort] HTTP send failed:', e.message);
     transport = 'none';
     updateTransportBadge();
     return null;
@@ -384,14 +384,14 @@ async function reprobeTransport() {
   const now = Date.now();
   if (now - lastReprobe < REPROBE_COOLDOWN_MS) return false;
   lastReprobe = now;
-  console.log('[xTap] Re-probing HTTP daemon...');
+  console.log('[XPort] Re-probing HTTP daemon...');
   // Try cached credentials first (fast path)
   if (httpToken && httpPort) {
     const alive = await probeHttp(httpPort, httpToken);
     if (alive) {
       transport = 'http';
       updateBadge();
-      console.log('[xTap] HTTP daemon recovered (cached token)');
+      console.log('[XPort] HTTP daemon recovered (cached token)');
       return true;
     }
   }
@@ -405,7 +405,7 @@ async function reprobeTransport() {
       transport = 'http';
       await chrome.storage.local.set({ httpToken, httpPort });
       updateBadge();
-      console.log('[xTap] HTTP daemon recovered (fresh token)');
+      console.log('[XPort] HTTP daemon recovered (fresh token)');
       return true;
     }
   }
@@ -419,7 +419,7 @@ async function reprobeTransport() {
       httpPort = stored.httpPort;
       transport = 'http';
       updateBadge();
-      console.log('[xTap] HTTP daemon recovered (stored token)');
+      console.log('[XPort] HTTP daemon recovered (stored token)');
       return true;
     }
   }
@@ -442,14 +442,14 @@ async function flush() {
     try {
       const resp = await sendToHost(message);
       if (!resp || !resp.ok) {
-        console.error('[xTap] Host rejected tweets:', resp?.error || 'no response');
+        console.error('[XPort] Host rejected tweets:', resp?.error || 'no response');
         buffer.unshift(...batch);
         await saveState();
       } else {
         await saveState();
       }
     } catch (e) {
-      console.error('[xTap] Send failed, buffering tweets back:', e);
+      console.error('[XPort] Send failed, buffering tweets back:', e);
       buffer.unshift(...batch);
       await saveState();
     }
@@ -511,7 +511,7 @@ function enqueueTweets(tweets, endpoint = 'unknown') {
 
   const dupeCount = tweets.length - newCount;
   if (dupeCount > 0) {
-    console.log(`[xTap] Dedup: ${newCount} new, ${dupeCount} duplicates skipped (seenIds: ${seenIds.size})`);
+    console.log(`[XPort] Dedup: ${newCount} new, ${dupeCount} duplicates skipped (seenIds: ${seenIds.size})`);
   }
 
   sessionCount += newCount;
@@ -521,7 +521,7 @@ function enqueueTweets(tweets, endpoint = 'unknown') {
   if (buffer.length > MAX_BUFFER_SIZE) {
     const overflow = buffer.length - MAX_BUFFER_SIZE;
     buffer.splice(0, overflow);
-    console.warn(`[xTap] Buffer overflow: dropped ${overflow} oldest tweets (cap: ${MAX_BUFFER_SIZE})`);
+    console.warn(`[XPort] Buffer overflow: dropped ${overflow} oldest tweets (cap: ${MAX_BUFFER_SIZE})`);
     emitTraceEvent({ timestamp: Date.now(), endpoint, tweetId: null, status: 'BUFFER_OVERFLOW', reason: `dropped ${overflow}` });
   }
 }
@@ -565,7 +565,7 @@ function summarizeShape(obj, depth = 0, maxDepth = 3) {
 function verboseLog(endpoint, data) {
   if (!verboseLogging) return;
   const shape = summarizeShape(data);
-  console.log(`[xTap:verbose] ${endpoint} response shape: ${shape}`);
+  console.log(`[XPort:verbose] ${endpoint} response shape: ${shape}`);
 
   // Auto-dump first response per endpoint per session (for agentic fixture creation)
   if (!autoDumpedThisSession.has(endpoint)) {
@@ -574,7 +574,7 @@ function verboseLog(endpoint, data) {
     const filename = `dump-${endpoint}-${ts}.json`;
     const content = JSON.stringify({ endpoint, data }, null, 2);
     sendToHost({ type: 'DUMP', filename, content, outputDir: outputDir || undefined });
-    console.log(`[xTap:autodump] ${endpoint} → ${filename}`);
+    console.log(`[XPort:autodump] ${endpoint} → ${filename}`);
   }
 
   // Manual dump: target a specific endpoint or tweet IDs for multi-sample capture.
@@ -606,7 +606,7 @@ function verboseLog(endpoint, data) {
       const filename = `dump-${endpoint}-${ts}.json`;
       const content = JSON.stringify({ endpoint, data }, null, 2);
       sendToHost({ type: 'DUMP', filename, content, outputDir: outputDir || undefined });
-      console.log(`[xTap:dump] ${endpoint} (${reason}) → ${filename} (${content.length} chars)`);
+      console.log(`[XPort:dump] ${endpoint} (${reason}) → ${filename} (${content.length} chars)`);
     }
   });
 }
@@ -650,7 +650,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           let warn = '';
           if (missingAuthor > 0) warn += ` | ${missingAuthor} missing username`;
           if (missingText > 0) warn += ` | ${missingText} missing text`;
-          console.log(`[xTap] ${msg.endpoint}: ${tweets.length} tweets${warn}`);
+          console.log(`[XPort] ${msg.endpoint}: ${tweets.length} tweets${warn}`);
           enqueueTweets(tweets, msg.endpoint);
           // Only clear WAL after state is durably persisted — if saveState
           // fails, the WAL entry stays for recovery on next startup.
@@ -662,7 +662,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         // the persist-then-clear sequence above.
         if (buffer.length >= BATCH_SIZE) flush();
       } catch (e) {
-        console.error(`[xTap] Parse error for ${msg.endpoint}:`, e, '| data keys:', Object.keys(msg.data || {}).join(', '));
+        console.error(`[XPort] Parse error for ${msg.endpoint}:`, e, '| data keys:', Object.keys(msg.data || {}).join(', '));
         emitTraceEvent({ timestamp: Date.now(), endpoint: msg.endpoint, tweetId: null, status: 'PARSER_ERROR', reason: e.message });
         await clearStagedPayload(stageKey);
       }
@@ -685,7 +685,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         verboseLogging,
         transport,
         transportError: transport === 'none'
-          ? 'Daemon not running. Check ~/.xtap/daemon-stderr.log'
+          ? 'Daemon not running. Check ~/.xport/daemon-stderr.log'
           : null,
         discoveredEndpoints: [...autoDumpedThisSession],
       });
@@ -697,7 +697,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     debugLogging = !!msg.debugLogging;
     chrome.storage.local.set({ debugLogging });
     if (debugLogging) {
-      console.log('[xTap] Debug logging enabled');
+      console.log('[XPort] Debug logging enabled');
     } else {
       logBuffer = [];
     }
@@ -708,7 +708,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === 'SET_VERBOSE') {
     verboseLogging = !!msg.verboseLogging;
     chrome.storage.local.set({ verboseLogging });
-    console.log(`[xTap] Verbose logging ${verboseLogging ? 'enabled' : 'disabled'}`);
+    console.log(`[XPort] Verbose logging ${verboseLogging ? 'enabled' : 'disabled'}`);
     sendResponse({ verboseLogging });
     return true;
   }
@@ -839,7 +839,7 @@ if (typeof chrome.storage.session?.setAccessLevel === 'function') {
 // Graceful degradation: if restoreState fails (e.g. storage unavailable), continue
 // with defaults so the extension still captures tweets.
 restoreState().catch((e) => {
-  console.error('[xTap] Failed to restore state:', e);
+  console.error('[XPort] Failed to restore state:', e);
 }).then(async () => {
   await recoverStagedPayloads();
   readyResolve();
@@ -851,5 +851,5 @@ restoreState().catch((e) => {
   }
   scheduleNextFlush();
   const seenStorageLabel = (isDevMode && hasSessionStorage) ? 'session' : 'local';
-  console.log(`[xTap] Service worker started (${isDevMode ? 'dev' : 'production'} mode, seenIds in ${seenStorageLabel} storage)`);
+  console.log(`[XPort] Service worker started (${isDevMode ? 'dev' : 'production'} mode, seenIds in ${seenStorageLabel} storage)`);
 });

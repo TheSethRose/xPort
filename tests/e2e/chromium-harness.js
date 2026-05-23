@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * chromium-harness.js — Launch Chromium with the real xTap extension and Fake X.
+ * chromium-harness.js — Launch Chromium with the real XPort extension and Fake X.
  *
  * Verifies:
  *   1. Chromium launches successfully with the extension
@@ -111,7 +111,7 @@ async function run() {
   const fakeX = await startFakeX(port);
 
   // 3. Create temp user data dir for Chromium
-  const userDataDir = mkdtempSync(join(tmpdir(), 'xtap-e2e-'));
+  const userDataDir = mkdtempSync(join(tmpdir(), 'xport-e2e-'));
 
   let context;
   try {
@@ -160,16 +160,16 @@ async function run() {
       timeout: 15_000,
     });
 
-    // Wait for the page's fetch to complete — title changes to "xTap:loaded"
+    // Wait for the page's fetch to complete — title changes to "XPort:loaded"
     await page.waitForFunction(
-      () => document.title === 'xTap:loaded' || document.title === 'xTap:error',
+      () => document.title === 'XPort:loaded' || document.title === 'XPort:error',
       { timeout: 15_000 },
     );
 
     const title = await page.title();
-    if (title !== 'xTap:loaded') {
+    if (title !== 'XPort:loaded') {
       throw new Error(
-        `Fake X page title is "${title}" — expected "xTap:loaded". The extension fetch interception or Fake X replay may have failed.`,
+        `Fake X page title is "${title}" — expected "XPort:loaded". The extension fetch interception or Fake X replay may have failed.`,
       );
     }
     console.log('[harness] Fake X loaded successfully under x.com');

@@ -1,4 +1,4 @@
-# xTap — Windows installer for the native messaging host (PowerShell).
+# XPort — Windows installer for the native messaging host (PowerShell).
 # Usage:
 #   .\install.ps1 -ExtensionId <id> [-Browser chrome|firefox]
 #   .\install.ps1 -Browser firefox
@@ -14,14 +14,14 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$HostName = "com.xtap.host"
+$HostName = "com.xport.host"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
-$HostPy = Join-Path $ScriptDir "xtap_host.py"
-$BatPath = Join-Path $ScriptDir "xtap_host.bat"
+$HostPy = Join-Path $ScriptDir "xport_host.py"
+$BatPath = Join-Path $ScriptDir "xport_host.bat"
 $ManifestPath = Join-Path $ScriptDir "$HostName.json"
 
 if (-not $ExtensionId -and $Browser -eq "firefox") {
-    $ExtensionId = "xtap@mkubicek.dev"
+    $ExtensionId = "xport@sethrose.dev"
 }
 if (-not $ExtensionId) {
     Write-Error "ExtensionId is required for Chrome installs (find it at chrome://extensions)."
@@ -43,7 +43,7 @@ if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
 # Write manifest (path must point to the .bat wrapper)
 $manifestData = @{
     name = $HostName
-    description = "xTap native messaging host -- writes captured tweets to JSONL"
+    description = "XPort native messaging host -- writes captured tweets to JSONL"
     path = $BatPath
     type = "stdio"
 }
@@ -71,12 +71,12 @@ Write-Host "  Host script: $HostPy"
 Write-Host "  Extension ID: $ExtensionId"
 
 # --- Install HTTP daemon via Scheduled Task ---
-$DaemonPy = Join-Path $ScriptDir "xtap_daemon.py"
-$XtapDir = Join-Path $HOME ".xtap"
+$DaemonPy = Join-Path $ScriptDir "xport_daemon.py"
+$XtapDir = Join-Path $HOME ".xport"
 $XtapSecret = Join-Path $XtapDir "secret"
-$TaskName = "xTapDaemon"
+$TaskName = "XPortDaemon"
 
-# Create ~/.xtap/ directory
+# Create ~/.xport/ directory
 if (-not (Test-Path $XtapDir)) {
     New-Item -ItemType Directory -Path $XtapDir -Force | Out-Null
 }
@@ -109,7 +109,7 @@ $Trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 $Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
     -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval ([TimeSpan]::FromMinutes(1))
 Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger `
-    -Settings $Settings -Description "xTap HTTP daemon" | Out-Null
+    -Settings $Settings -Description "XPort HTTP daemon" | Out-Null
 
 # Start the task now
 Start-ScheduledTask -TaskName $TaskName
@@ -127,6 +127,6 @@ Write-Host "  Start-ScheduledTask -TaskName $TaskName"
 Write-Host "  Stop-ScheduledTask -TaskName $TaskName"
 
 Write-Host ""
-$outputDir = if ($env:XTAP_OUTPUT_DIR) { $env:XTAP_OUTPUT_DIR } else { Join-Path $HOME "Downloads\xtap" }
-Write-Host "Output directory (set XTAP_OUTPUT_DIR to change):"
+$outputDir = if ($env:XPORT_OUTPUT_DIR) { $env:XPORT_OUTPUT_DIR } else { Join-Path $HOME "Downloads\xport" }
+Write-Host "Output directory (set XPORT_OUTPUT_DIR to change):"
 Write-Host "  $outputDir"

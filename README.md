@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="icons/icon128.png" alt="xTap logo" width="96" />
+  <img src="icons/icon128.png" alt="XPort logo" width="96" />
 </p>
 
-<h1 align="center">xTap</h1>
+<h1 align="center">XPort</h1>
 
 <p align="center">
   <strong>Passively capture tweets as you browse X/Twitter</strong>
@@ -21,17 +21,18 @@
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-blue" alt="Platform" />
   <img src="https://img.shields.io/badge/browser-Chrome%20%7C%20Firefox-green" alt="Chrome and Firefox" />
   <img src="https://img.shields.io/badge/license-MIT-yellow" alt="MIT License" />
-  <a href="https://codecov.io/gh/mkubicek/xTap"><img src="https://codecov.io/gh/mkubicek/xTap/graph/badge.svg" alt="codecov" /></a>
+  <a href="https://codecov.io/gh/TheSethRose/xPort"><img src="https://codecov.io/gh/TheSethRose/xPort/graph/badge.svg" alt="codecov" /></a>
 </p>
 
 ---
 
-xTap is a browser extension (Chrome + Firefox) that silently intercepts the GraphQL API responses X/Twitter already sends to your browser and saves every tweet you encounter as structured JSONL. No scraping, no extra requests — just a tap on the data already flowing through.
+XPort is a browser extension, local daemon, and hosted ingestion API for capturing tweets you see on X/Twitter and storing them as structured data. The browser-side capture stays passive: it only reads GraphQL responses X already sent to your browser. The local daemon writes JSONL as a fallback and can forward captured batches to a hosted API backed by PostgreSQL.
 
 ## Features
 
 - **Zero footprint** — no additional network requests; captures what your browser already receives
 - **Structured output** — each tweet saved as a clean JSON object with author, metrics, media, and more
+- **PostgreSQL sync** — optionally forward captured batches to the hosted XPort API for durable SQL storage
 - **Article support** — long-form X articles are captured with full text, inline image references, and Draft.js block structure
 - **Video download** — download videos from tweets using yt-dlp (or direct MP4 fallback) via the extension popup. Requires the HTTP daemon. **Note:** unlike passive capture, video downloads make additional network requests to X and are not stealth.
 - **Image download** — opt-in toggle in the popup ("Download images automatically") fetches photos from `pbs.twimg.com` to `<output_dir>/media/<tweet_id>/<filename>` as you browse. Daemon-side; rate-limited; logs to `media-manifest.jsonl`. **Note:** also not stealth — adds requests to the Twitter CDN.
@@ -70,10 +71,14 @@ xTap is a browser extension (Chrome + Firefox) that silently intercepts the Grap
                 │         │
                 ▼         ▼
      ┌──────────────┐  ┌──────────────┐
-     │ xtap_daemon  │  │ xtap_host.py │
+     │ xport_daemon  │  │ xport_host.py │
      │ (HTTP)       │  │ (stdio)      │
      └──────┬───────┘  └──────────────┘
             │
+            ├──────────────► XPort API (`POST /api/ingest/tweets`)
+            │                    │
+            │                    ▼
+            │              PostgreSQL (`tweets`, `ingest_batches`)
             ▼
        tweets-YYYY-MM-DD.jsonl
 ```
@@ -81,20 +86,21 @@ xTap is a browser extension (Chrome + Firefox) that silently intercepts the Grap
 1. A MAIN world content script patches `fetch` and `XMLHttpRequest.open()` to observe GraphQL responses as they arrive
 2. Payloads are relayed via a random-named `CustomEvent` to an ISOLATED world bridge, which forwards them to the service worker
 3. The service worker parses, normalizes, deduplicates, and batches tweets
-4. Batches are sent to disk via the **HTTP daemon** (`xtap_daemon.py`), a standalone process on `127.0.0.1:17381` managed by launchd (macOS), systemd (Linux), or Scheduled Task (Windows). On macOS, it runs outside browser TCC sandboxes and can write to protected paths like `~/Documents` and iCloud Drive
-5. At startup, the extension retrieves the daemon's auth token via **native messaging** (`xtap_host.py` over Chrome/Firefox native messaging). This is a one-time bootstrap — all data flows through HTTP
+4. Batches are sent to disk via the **HTTP daemon** (`xport_daemon.py`), a standalone process on `127.0.0.1:17381` managed by launchd (macOS), systemd (Linux), or Scheduled Task (Windows). On macOS, it runs outside browser TCC sandboxes and can write to protected paths like `~/Documents` and iCloud Drive
+5. At startup, the extension retrieves the daemon's auth token via **native messaging** (`xport_host.py` over Chrome/Firefox native messaging). This is a one-time bootstrap — all data flows through HTTP
+6. When `XPORT_API_URL` and `XPORT_INGEST_TOKEN` are configured, the daemon forwards successful local batches to the hosted API while keeping JSONL as the local fallback
 
 ## Is This Safe to Use?
 
 X is [rolling out stricter detection for automation and bots](https://x.com/nikitabier/status/2022496540275937525). The key line: *"If a human is not tapping on the screen, the account and all associated accounts will likely be suspended."*
 
-**xTap is not a bot.** It doesn't post, like, follow, scroll, or make any API calls on your behalf. It sits in the background and reads the responses X already sent to your browser while *you* browse normally. From X's server-side perspective, your account looks identical to any other user — because you *are* a normal user. There is no extra traffic to detect.
+**XPort is not a bot.** It doesn't post, like, follow, scroll, or make any API calls on your behalf. It sits in the background and reads the responses X already sent to your browser while *you* browse normally. From X's server-side perspective, your account looks identical to any other user — because you *are* a normal user. There is no extra traffic to detect.
 
-The risk of automation enforcement applies to tools that *act* as you (auto-liking, auto-following, automated scrolling, headless browsers). xTap does none of that. It's the equivalent of keeping DevTools open and saving the Network tab — just automated into structured JSONL.
+The risk of automation enforcement applies to tools that *act* as you (auto-liking, auto-following, automated scrolling, headless browsers). XPort does none of that. It's the equivalent of keeping DevTools open and saving the Network tab — just automated into structured JSONL.
 
 ### Stealth Measures
 
-Even though passive interception is inherently low-risk, xTap avoids leaving unnecessary traces:
+Even though passive interception is inherently low-risk, XPort avoids leaving unnecessary traces:
 
 - **No extra network requests** — only reads responses the browser already received; nothing to spot in a network log
 - **Native-looking API patches** — `fetch` and `XMLHttpRequest.prototype.open` are patched with `toString()` overrides that return `[native code]`, passing the most common runtime integrity checks
@@ -105,7 +111,7 @@ Even though passive interception is inherently low-risk, xTap avoids leaving unn
 - **Minimal permissions** — only `storage` and `nativeMessaging`; no `webRequest`, no host permissions beyond `x.com` / `twitter.com` / `127.0.0.1`
 - **Jittered flush timing** — batches are flushed on a randomized interval to avoid a clockwork-regular pattern
 
-These measures don't make detection impossible — a determined page script could still compare prototype references or probe for patched behavior — but they avoid the low-hanging signals that fingerprinting scripts typically check. More importantly, there's nothing to detect server-side because xTap generates zero network activity of its own.
+These measures don't make detection impossible — a determined page script could still compare prototype references or probe for patched behavior — but they avoid the low-hanging signals that fingerprinting scripts typically check. More importantly, there's nothing to detect server-side because XPort generates zero network activity of its own.
 
 ## Installation
 
@@ -123,7 +129,7 @@ These measures don't make detection impossible — a determined page script coul
 **Chrome:**
 1. Open `chrome://extensions`
 2. Enable **Developer mode** (top right)
-3. Click **Load unpacked** and select the `xtap/` directory
+3. Click **Load unpacked** and select the `xport/` directory
 4. Copy the extension ID shown on the card (used by native host install)
 
 **Firefox (128+):**
@@ -133,7 +139,7 @@ These measures don't make detection impossible — a determined page script coul
 4. Click **Load Temporary Add-on...**
 5. Select the Firefox copy's `manifest.json`
 
-Firefox uses the fixed extension ID from `manifest.firefox.json`: `xtap@mkubicek.dev`.
+Firefox uses the fixed extension ID from `manifest.firefox.json`: `xport@sethrose.dev`.
 
 Thanks to [Vincent Koc](https://github.com/vincentkoc) for the Firefox support contribution.
 
@@ -153,7 +159,7 @@ cd native-host
 ./install.sh firefox
 ```
 
-This installs the native messaging host (for auth token bootstrap) and an HTTP daemon (`xtap_daemon.py`) that runs via launchd. The daemon runs independently of the browser process tree and has its own TCC permissions, so it can write to protected paths like `~/Documents` and iCloud Drive. The installer captures your current `PATH` so the daemon can find tools like `yt-dlp`.
+This installs the native messaging host (for auth token bootstrap) and an HTTP daemon (`xport_daemon.py`) that runs via launchd. The daemon runs independently of the browser process tree and has its own TCC permissions, so it can write to protected paths like `~/Documents` and iCloud Drive. The installer captures your current `PATH` so the daemon can find tools like `yt-dlp`.
 
 The extension automatically detects the daemon via the native host's auth token. If the daemon is not running, the extension will show a red "!" badge and an error in the popup.
 
@@ -173,7 +179,7 @@ cd native-host
 ./install.sh firefox
 ```
 
-This installs the native messaging host and an HTTP daemon (`xtap_daemon.py`) that runs as a systemd user service. The daemon enables video downloads and provides the same HTTP transport as macOS.
+This installs the native messaging host and an HTTP daemon (`xport_daemon.py`) that runs as a systemd user service. The daemon enables video downloads and provides the same HTTP transport as macOS.
 
 </details>
 
@@ -191,7 +197,7 @@ cd native-host
 .\install.ps1 -Browser firefox
 ```
 
-This installs the native messaging host and an HTTP daemon (`xtap_daemon.py`) as a Windows Scheduled Task that starts at logon. The daemon enables video downloads and provides the same HTTP transport as macOS/Linux.
+This installs the native messaging host and an HTTP daemon (`xport_daemon.py`) as a Windows Scheduled Task that starts at logon. The daemon enables video downloads and provides the same HTTP transport as macOS/Linux.
 
 </details>
 
@@ -199,7 +205,7 @@ This installs the native messaging host and an HTTP daemon (`xtap_daemon.py`) as
 
 Open [x.com](https://x.com) and browse normally. The badge counter on the extension icon shows how many tweets have been captured this session. Click the icon to see stats and pause/resume capture.
 
-> **After updating the extension:** Reload xTap in your extension manager (`chrome://extensions` or `about:debugging#/runtime/this-firefox`), then hard-reload any open X tabs (`Cmd+Shift+R` / `Ctrl+Shift+R`). The content scripts that intercept API responses are injected at page load, so stale scripts from before the update won't connect to the new service worker.
+> **After updating the extension:** Reload XPort in your extension manager (`chrome://extensions` or `about:debugging#/runtime/this-firefox`), then hard-reload any open X tabs (`Cmd+Shift+R` / `Ctrl+Shift+R`). The content scripts that intercept API responses are injected at page load, so stale scripts from before the update won't connect to the new service worker.
 
 ### Upgrading from a previous version
 
@@ -208,9 +214,9 @@ After updating the extension files:
 2. Reload the extension in your browser extension manager
 3. Hard-reload any open X tabs (`Cmd+Shift+R` / `Ctrl+Shift+R`)
 
-**From versions before v0.20.0 on macOS/Linux:** Re-running `install.sh` is **required** — the native messaging manifest now points to a wrapper script (`~/.xtap/xtap_host_wrapper.sh`) that uses an absolute Python path, fixing native host launch failures on macOS where Chrome's minimal environment couldn't find `python3`.
+**From versions before v0.20.0 on macOS/Linux:** Re-running `install.sh` is **required** — the native messaging manifest now points to a wrapper script (`~/.xport/xport_host_wrapper.sh`) that uses an absolute Python path, fixing native host launch failures on macOS where Chrome's minimal environment couldn't find `python3`.
 
-**From versions before v0.19.0:** The native messaging host (`xtap_host.py`) no longer handles tweet writing — all data now flows through the HTTP daemon exclusively. Re-running `install.sh` is required to update the daemon's service configuration (adds `XTAP_LOG_LEVEL` support). The extension will show a red "!" badge if the daemon is not running, instead of silently falling back to native messaging.
+**From versions before v0.19.0:** The native messaging host (`xport_host.py`) no longer handles tweet writing — all data now flows through the HTTP daemon exclusively. Re-running `install.sh` is required to update the daemon's service configuration (adds `XPORT_LOG_LEVEL` support). The extension will show a red "!" badge if the daemon is not running, instead of silently falling back to native messaging.
 
 **From versions before v0.13.0 on macOS:** Re-running `install.sh` is **required** for video download support — the daemon needs an updated launchd configuration to find yt-dlp on your PATH.
 
@@ -226,54 +232,82 @@ If the extension shows "Not connected" or a red "!" badge:
 
 2. **Check daemon logs:**
    ```bash
-   cat ~/.xtap/daemon-stderr.log
+   cat ~/.xport/daemon-stderr.log
    ```
    The daemon logs startup diagnostics (Python version, output directory, token status) on every start. Common issues:
-   - `FATAL: ~/.xtap/secret not found` — run `install.sh` first
+   - `FATAL: ~/.xport/secret not found` — run `install.sh` first
    - `FATAL: Cannot bind to 127.0.0.1:17381` — another instance is already running
    - Import errors — check Python version (`python3 --version`, requires 3.x)
 
 3. **Check native host errors** (token bootstrap failures):
    ```bash
-   cat ~/.xtap/host-error.log
+   cat ~/.xport/host-error.log
    ```
    This file is created when the native messaging host crashes. It includes the Python version, script path, and full traceback.
 
 4. **Enable debug logging** for detailed request-level daemon logs:
    ```bash
-   export XTAP_LOG_LEVEL=debug
+   export XPORT_LOG_LEVEL=debug
    cd native-host && ./install.sh <extension-id> chrome
    ```
-   Then check `~/.xtap/daemon-stderr.log` for per-request details (method, path, duration, tweet counts).
+   Then check `~/.xport/daemon-stderr.log` for per-request details (method, path, duration, tweet counts).
 
 5. **Verify the native messaging manifest** points to the correct path:
    ```bash
    # Chrome (macOS):
-   cat ~/Library/Application\ Support/Google/Chrome/NativeMessagingHosts/com.xtap.host.json
+   cat ~/Library/Application\ Support/Google/Chrome/NativeMessagingHosts/com.xport.host.json
    # Firefox (macOS):
-   cat ~/Library/Application\ Support/Mozilla/NativeMessagingHosts/com.xtap.host.json
+   cat ~/Library/Application\ Support/Mozilla/NativeMessagingHosts/com.xport.host.json
    ```
-   The `path` field should point to `~/.xtap/xtap_host_wrapper.sh` (macOS/Linux) or `xtap_host.bat` (Windows). The wrapper uses an absolute Python path so native messaging works even in Chrome's minimal environment. If it still points directly at `xtap_host.py`, re-run `install.sh`.
+   The `path` field should point to `~/.xport/xport_host_wrapper.sh` (macOS/Linux) or `xport_host.bat` (Windows). The wrapper uses an absolute Python path so native messaging works even in Chrome's minimal environment. If it still points directly at `xport_host.py`, re-run `install.sh`.
 
 ## Configuration
 
 ### Output directory
 
-The easiest way to change where tweets are saved is through the extension popup — click the xTap icon and enter your preferred path in the **Output directory** field.
+The easiest way to change where tweets are saved is through the extension popup — click the XPort icon and enter your preferred path in the **Output directory** field.
 
-Alternatively, set the `XTAP_OUTPUT_DIR` environment variable before launching your browser:
+Alternatively, set the `XPORT_OUTPUT_DIR` environment variable before launching your browser:
 
 ```bash
-export XTAP_OUTPUT_DIR="$HOME/Documents/xtap-data"
+export XPORT_OUTPUT_DIR="$HOME/Documents/xport-data"
 ```
 
 | Setting | Default | Description |
 |---|---|---|
 | Popup "Output directory" | *(empty — uses default)* | Overrides the output path per-session |
-| `XTAP_OUTPUT_DIR` env var | `~/Downloads/xtap` | Fallback when no popup setting is configured |
+| `XPORT_OUTPUT_DIR` env var | `~/Downloads/xport` | Fallback when no popup setting is configured |
 | Debug Dashboard | — | Accessible via popup link; shows live capture events, transport health, debug logging and discovery mode toggles, and parser sandbox |
 
 > **macOS note:** On macOS, the HTTP daemon (installed via `install.sh`) runs outside browser TCC sandboxes and can write to protected paths like `~/Documents` and iCloud Drive after a one-time macOS permission prompt.
+
+### Hosted API forwarding
+
+The local daemon can forward batches to the hosted XPort API after writing them to JSONL:
+
+```bash
+export XPORT_API_URL="https://your-xport-api.example.com"
+export XPORT_INGEST_TOKEN="your-shared-token"
+cd native-host
+./install.sh <your-extension-id> chrome
+```
+
+The installer writes those values into the launchd/systemd daemon config. Re-run it after changing the URL or token.
+
+The hosted API uses:
+
+| Env var | Description |
+|---|---|
+| `DATABASE_URL` | PostgreSQL connection string |
+| `INGEST_TOKEN` | Bearer token required by `POST /api/ingest/tweets` |
+| `PORT` | HTTP port, defaults to `8080` |
+
+API endpoints:
+
+| Endpoint | Auth | Description |
+|---|---|---|
+| `GET /health` | None | DB-backed health check |
+| `POST /api/ingest/tweets` | Bearer token | Inserts/upserts tweets and records an ingest batch |
 
 ## Output Format
 
@@ -346,7 +380,7 @@ Top-level photo `media[]` entries do **not** carry a `local_path` field — the 
 ## Project Structure
 
 ```
-xTap/
+XPort/
 ├── manifest.json              # Chrome MV3 extension manifest
 ├── manifest.firefox.json      # Firefox MV3 extension manifest (generated — do not edit)
 ├── background.js              # Service worker — parsing, dedup, transport
@@ -356,18 +390,22 @@ xTap/
 ├── debug.html/js/css          # Debug dashboard (live events, transport health, parser sandbox)
 ├── icons/                     # Extension icons
 ├── lib/                       # Shared utilities
+├── api/
+│   └── xport_api.py            # Hosted PostgreSQL ingestion API
+├── Dockerfile                  # Coolify/API container
+├── requirements.txt            # API runtime dependencies
 └── native-host/
-    ├── xtap_core.py              # Shared file I/O logic
-    ├── xtap_host.py              # Native messaging host — token bootstrap only (Python, stdio)
-    ├── xtap_daemon.py            # HTTP daemon
-    ├── com.xtap.daemon.plist     # launchd plist template (macOS)
-    ├── com.xtap.daemon.service   # systemd unit template (Linux)
-    ├── com.xtap.host.json        # Native host manifest template (Chrome)
-    ├── com.xtap.host.firefox.json # Native host manifest template (Firefox)
+    ├── xport_core.py              # Shared file I/O logic
+    ├── xport_host.py              # Native messaging host — token bootstrap only (Python, stdio)
+    ├── xport_daemon.py            # HTTP daemon
+    ├── com.xport.daemon.plist     # launchd plist template (macOS)
+    ├── com.xport.daemon.service   # systemd unit template (Linux)
+    ├── com.xport.host.json        # Native host manifest template (Chrome)
+    ├── com.xport.host.firefox.json # Native host manifest template (Firefox)
     ├── install.sh                # Installer for macOS / Linux
     ├── install.ps1               # Installer for Windows
-    ├── xtap_host.bat             # Windows native host wrapper
-    └── xtap_daemon.bat           # Windows daemon wrapper
+    ├── xport_host.bat             # Windows native host wrapper
+    └── xport_daemon.bat           # Windows daemon wrapper
 ```
 
 ## Development
@@ -378,40 +416,41 @@ After modifying extension files (`background.js`, `lib/`, `content-*.js`, `popup
 
 **Dev mode:** When loaded unpacked (developer mode), the extension prefers `chrome.storage.session` for the `seenIds` dedup cache, and falls back to `chrome.storage.local` if session storage APIs are unavailable. When session storage is available, reloading the extension automatically clears the cache — no need to manually clear storage between test runs.
 
-After modifying Python host files (`xtap_core.py`, `xtap_host.py`, `xtap_daemon.py`), the native host picks up changes on next browser restart. To restart the HTTP daemon immediately:
+After modifying Python host files (`xport_core.py`, `xport_host.py`, `xport_daemon.py`), the native host picks up changes on next browser restart. To restart the HTTP daemon immediately:
 
 **macOS (launchd):**
 ```bash
-launchctl kickstart -k gui/$(id -u)/com.xtap.daemon   # restart
-launchctl bootout gui/$(id -u)/com.xtap.daemon        # stop
-launchctl print gui/$(id -u)/com.xtap.daemon          # status
-tail -f ~/.xtap/daemon-stderr.log                     # logs
+launchctl kickstart -k gui/$(id -u)/com.xport.daemon   # restart
+launchctl bootout gui/$(id -u)/com.xport.daemon        # stop
+launchctl print gui/$(id -u)/com.xport.daemon          # status
+tail -f ~/.xport/daemon-stderr.log                     # logs
 ```
 
 **Linux (systemd):**
 ```bash
-systemctl --user restart com.xtap.daemon   # restart
-systemctl --user stop com.xtap.daemon      # stop
-systemctl --user status com.xtap.daemon    # status
-journalctl --user -u com.xtap.daemon -f    # logs
+systemctl --user restart com.xport.daemon   # restart
+systemctl --user stop com.xport.daemon      # stop
+systemctl --user status com.xport.daemon    # status
+journalctl --user -u com.xport.daemon -f    # logs
 ```
 
 **Windows (Scheduled Task, PowerShell):**
 ```powershell
-Stop-ScheduledTask -TaskName xTapDaemon; Start-ScheduledTask -TaskName xTapDaemon  # restart
-Stop-ScheduledTask -TaskName xTapDaemon                                            # stop
-Get-ScheduledTask -TaskName xTapDaemon                                             # status
-Get-Content ~\.xtap\daemon-stderr.log -Tail 50 -Wait                               # logs
+Stop-ScheduledTask -TaskName XPortDaemon; Start-ScheduledTask -TaskName XPortDaemon  # restart
+Stop-ScheduledTask -TaskName XPortDaemon                                            # stop
+Get-ScheduledTask -TaskName XPortDaemon                                             # status
+Get-Content ~\.xport\daemon-stderr.log -Tail 50 -Wait                               # logs
 ```
 
 ## Testing
 
 ```bash
+uv run --with pytest --with 'psycopg[binary]==3.2.13' pytest tests/test_xport_api.py tests/test_xport_core.py tests/test_xport_daemon.py -q
 python3 -m pytest tests/ -v
 node --test tests/*.test.mjs
 ```
 
-CI runs these on every push to `main` with coverage uploaded to [Codecov](https://codecov.io/gh/mkubicek/xTap).
+CI runs these on every push to `main` with coverage uploaded to [Codecov](https://codecov.io/gh/TheSethRose/xPort).
 
 Parser fixture packs live under `tests/fixtures/`. Raw captures stay local in
 `tests/fixtures/private-raw/` (gitignored), while committed anonymized packs

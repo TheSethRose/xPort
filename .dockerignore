@@ -1,0 +1,15 @@
+.git
+.env
+.DS_Store
+node_modules
+__pycache__
+.pytest_cache
+coverage
+coverage-*
+
+tests
+native-host
+icons
+*.crx
+*.pem
+tweets*.jsonl

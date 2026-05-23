@@ -1,4 +1,4 @@
-// xTap — MAIN world content script
+// XPort — MAIN world content script
 // Intercepts X/Twitter GraphQL API responses via fetch and XMLHttpRequest.
 // Dispatches a CustomEvent to relay data to the ISOLATED world bridge script.
 (function () {

@@ -1,15 +1,16 @@
-"""Tests for native-host/xtap_core.py"""
+"""Tests for native-host/xport_core.py"""
 
 import json
 import os
 import sys
 import threading
+import urllib.request
 
 import pytest
 
 # Import module under test
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'native-host'))
-import xtap_core
+import xport_core
 
 
 # ---------------------------------------------------------------------------
@@ -19,19 +20,19 @@ import xtap_core
 
 class TestDatePrefix:
     def test_iso_datetime(self):
-        assert xtap_core._date_prefix('2024-01-15T12:34:56.000Z') == '2024.01.15_'
+        assert xport_core._date_prefix('2024-01-15T12:34:56.000Z') == '2024.01.15_'
 
     def test_date_only(self):
-        assert xtap_core._date_prefix('2024-01-15') == '2024.01.15_'
+        assert xport_core._date_prefix('2024-01-15') == '2024.01.15_'
 
     def test_empty_string(self):
-        assert xtap_core._date_prefix('') == ''
+        assert xport_core._date_prefix('') == ''
 
     def test_none(self):
-        assert xtap_core._date_prefix(None) == ''
+        assert xport_core._date_prefix(None) == ''
 
     def test_non_string_returns_empty(self):
-        assert xtap_core._date_prefix(12345) == ''
+        assert xport_core._date_prefix(12345) == ''
 
 
 # ---------------------------------------------------------------------------
@@ -41,7 +42,7 @@ class TestDatePrefix:
 
 class TestLoadSeenIds:
     def test_empty_dir(self, tmp_path):
-        assert xtap_core.load_seen_ids(str(tmp_path)) == set()
+        assert xport_core.load_seen_ids(str(tmp_path)) == set()
 
     def test_single_file(self, tmp_path):
         f = tmp_path / 'tweets-2024-01-15.jsonl'
@@ -49,7 +50,7 @@ class TestLoadSeenIds:
             json.dumps({'id': '111', 'text': 'a'}) + '\n'
             + json.dumps({'id': '222', 'text': 'b'}) + '\n'
         )
-        assert xtap_core.load_seen_ids(str(tmp_path)) == {'111', '222'}
+        assert xport_core.load_seen_ids(str(tmp_path)) == {'111', '222'}
 
     def test_multiple_files(self, tmp_path):
         (tmp_path / 'tweets-2024-01-15.jsonl').write_text(
@@ -58,28 +59,28 @@ class TestLoadSeenIds:
         (tmp_path / 'tweets-2024-01-16.jsonl').write_text(
             json.dumps({'id': '222'}) + '\n'
         )
-        assert xtap_core.load_seen_ids(str(tmp_path)) == {'111', '222'}
+        assert xport_core.load_seen_ids(str(tmp_path)) == {'111', '222'}
 
     def test_bad_json_skipped(self, tmp_path):
         f = tmp_path / 'tweets-2024-01-15.jsonl'
         f.write_text('not json\n' + json.dumps({'id': '111'}) + '\n')
-        assert xtap_core.load_seen_ids(str(tmp_path)) == {'111'}
+        assert xport_core.load_seen_ids(str(tmp_path)) == {'111'}
 
     def test_missing_id_not_added(self, tmp_path):
         f = tmp_path / 'tweets-2024-01-15.jsonl'
         f.write_text(json.dumps({'text': 'no id'}) + '\n')
-        assert xtap_core.load_seen_ids(str(tmp_path)) == set()
+        assert xport_core.load_seen_ids(str(tmp_path)) == set()
 
     def test_non_matching_filenames_ignored(self, tmp_path):
         (tmp_path / 'debug-2024-01-15.log').write_text(
             json.dumps({'id': '999'}) + '\n'
         )
-        assert xtap_core.load_seen_ids(str(tmp_path)) == set()
+        assert xport_core.load_seen_ids(str(tmp_path)) == set()
 
     def test_blank_lines_skipped(self, tmp_path):
         f = tmp_path / 'tweets-2024-01-15.jsonl'
         f.write_text('\n' + json.dumps({'id': '111'}) + '\n\n')
-        assert xtap_core.load_seen_ids(str(tmp_path)) == {'111'}
+        assert xport_core.load_seen_ids(str(tmp_path)) == {'111'}
 
 
 # ---------------------------------------------------------------------------
@@ -91,7 +92,7 @@ class TestWriteTweets:
     def test_basic_write(self, tmp_path):
         seen = set()
         tweets = [{'id': '1', 'text': 'a'}, {'id': '2', 'text': 'b'}]
-        count, dupes = xtap_core.write_tweets(tweets, str(tmp_path), seen)
+        count, dupes = xport_core.write_tweets(tweets, str(tmp_path), seen)
         assert count == 2
         assert dupes == 0
         # Verify file has 2 lines
@@ -103,34 +104,34 @@ class TestWriteTweets:
     def test_dedup_against_seen(self, tmp_path):
         seen = {'1'}
         tweets = [{'id': '1', 'text': 'a'}, {'id': '2', 'text': 'b'}]
-        count, dupes = xtap_core.write_tweets(tweets, str(tmp_path), seen)
+        count, dupes = xport_core.write_tweets(tweets, str(tmp_path), seen)
         assert count == 1
         assert dupes == 1
 
     def test_seen_ids_mutated(self, tmp_path):
         seen = set()
         tweets = [{'id': '1', 'text': 'a'}]
-        xtap_core.write_tweets(tweets, str(tmp_path), seen)
+        xport_core.write_tweets(tweets, str(tmp_path), seen)
         assert '1' in seen
 
     def test_consecutive_calls_dedup(self, tmp_path):
         seen = set()
-        xtap_core.write_tweets([{'id': '1', 'text': 'a'}], str(tmp_path), seen)
-        count, dupes = xtap_core.write_tweets([{'id': '1', 'text': 'a'}], str(tmp_path), seen)
+        xport_core.write_tweets([{'id': '1', 'text': 'a'}], str(tmp_path), seen)
+        count, dupes = xport_core.write_tweets([{'id': '1', 'text': 'a'}], str(tmp_path), seen)
         assert count == 0
         assert dupes == 1
 
     def test_article_bypasses_dedup(self, tmp_path):
         seen = {'1'}
         tweets = [{'id': '1', 'text': 'article', 'is_article': True}]
-        count, dupes = xtap_core.write_tweets(tweets, str(tmp_path), seen)
+        count, dupes = xport_core.write_tweets(tweets, str(tmp_path), seen)
         assert count == 1
         assert dupes == 0
 
     def test_tweet_without_id_written(self, tmp_path):
         seen = set()
         tweets = [{'text': 'no id'}]
-        count, dupes = xtap_core.write_tweets(tweets, str(tmp_path), seen)
+        count, dupes = xport_core.write_tweets(tweets, str(tmp_path), seen)
         assert count == 1
         assert dupes == 0
         # Should not add None to seen_ids
@@ -139,8 +140,8 @@ class TestWriteTweets:
 
     def test_appends_to_existing_file(self, tmp_path):
         seen = set()
-        xtap_core.write_tweets([{'id': '1', 'text': 'a'}], str(tmp_path), seen)
-        xtap_core.write_tweets([{'id': '2', 'text': 'b'}], str(tmp_path), seen)
+        xport_core.write_tweets([{'id': '1', 'text': 'a'}], str(tmp_path), seen)
+        xport_core.write_tweets([{'id': '2', 'text': 'b'}], str(tmp_path), seen)
         files = list(tmp_path.glob('tweets-*.jsonl'))
         lines = files[0].read_text().strip().split('\n')
         assert len(lines) == 2
@@ -148,7 +149,7 @@ class TestWriteTweets:
     def test_unicode_preserved(self, tmp_path):
         seen = set()
         tweets = [{'id': '1', 'text': 'Hello \u4e16\u754c \U0001f30d'}]
-        xtap_core.write_tweets(tweets, str(tmp_path), seen)
+        xport_core.write_tweets(tweets, str(tmp_path), seen)
         files = list(tmp_path.glob('tweets-*.jsonl'))
         content = files[0].read_text()
         assert '\u4e16\u754c' in content
@@ -163,49 +164,49 @@ class TestWriteTweets:
 class TestResolveOutputDir:
     def test_falsy_msg_dir(self, tmp_path):
         default = str(tmp_path / 'default')
-        result = xtap_core.resolve_output_dir('', default, set(), set())
+        result = xport_core.resolve_output_dir('', default, set(), set())
         assert result == default
 
     def test_none_msg_dir(self, tmp_path):
         default = str(tmp_path / 'default')
-        result = xtap_core.resolve_output_dir(None, default, set(), set())
+        result = xport_core.resolve_output_dir(None, default, set(), set())
         assert result == default
 
     def test_custom_dir_created(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(xtap_core, '_ALLOWED_ROOTS', (os.path.realpath(str(tmp_path)),))
+        monkeypatch.setattr(xport_core, '_ALLOWED_ROOTS', (os.path.realpath(str(tmp_path)),))
         custom = str(tmp_path / 'custom')
         seen = set()
         custom_dirs = set()
-        result = xtap_core.resolve_output_dir(custom, '/default', seen, custom_dirs)
+        result = xport_core.resolve_output_dir(custom, '/default', seen, custom_dirs)
         assert os.path.realpath(result) == os.path.realpath(custom)
         assert os.path.isdir(result)
 
     def test_custom_dir_no_reload(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(xtap_core, '_ALLOWED_ROOTS', (os.path.realpath(str(tmp_path)),))
+        monkeypatch.setattr(xport_core, '_ALLOWED_ROOTS', (os.path.realpath(str(tmp_path)),))
         custom = str(tmp_path / 'custom')
         os.makedirs(custom)
         seen = set()
         custom_dirs = set()
         # First call adds to custom_dirs
-        result = xtap_core.resolve_output_dir(custom, '/default', seen, custom_dirs)
+        result = xport_core.resolve_output_dir(custom, '/default', seen, custom_dirs)
         assert result in custom_dirs
         # Second call — custom_dirs already has it, load_seen_ids not called again
         old_size = len(custom_dirs)
-        xtap_core.resolve_output_dir(custom, '/default', seen, custom_dirs)
+        xport_core.resolve_output_dir(custom, '/default', seen, custom_dirs)
         assert len(custom_dirs) == old_size
 
     def test_tilde_expansion(self, tmp_path):
         seen = set()
         custom_dirs = set()
-        result = xtap_core.resolve_output_dir('~/xtap-test-dir', '/default', seen, custom_dirs)
-        expected = os.path.expanduser('~/xtap-test-dir')
+        result = xport_core.resolve_output_dir('~/xport-test-dir', '/default', seen, custom_dirs)
+        expected = os.path.expanduser('~/xport-test-dir')
         assert result == expected
         # Clean up
         if os.path.isdir(expected):
             os.rmdir(expected)
 
     def test_custom_dir_loads_seen_ids(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(xtap_core, '_ALLOWED_ROOTS', (os.path.realpath(str(tmp_path)),))
+        monkeypatch.setattr(xport_core, '_ALLOWED_ROOTS', (os.path.realpath(str(tmp_path)),))
         custom = str(tmp_path / 'custom')
         os.makedirs(custom)
         (tmp_path / 'custom' / 'tweets-2024-01-15.jsonl').write_text(
@@ -213,7 +214,7 @@ class TestResolveOutputDir:
         )
         seen = set()
         custom_dirs = set()
-        xtap_core.resolve_output_dir(custom, '/default', seen, custom_dirs)
+        xport_core.resolve_output_dir(custom, '/default', seen, custom_dirs)
         assert '999' in seen
 
 
@@ -226,35 +227,35 @@ class TestValidateOutputDir:
 
     def test_path_under_home_allowed(self):
         home = os.path.expanduser('~')
-        result = xtap_core.validate_output_dir(os.path.join(home, 'some', 'subdir'))
+        result = xport_core.validate_output_dir(os.path.join(home, 'some', 'subdir'))
         assert result.startswith(os.path.realpath(home))
 
     def test_home_itself_allowed(self):
         home = os.path.expanduser('~')
-        result = xtap_core.validate_output_dir(home)
+        result = xport_core.validate_output_dir(home)
         assert result == os.path.realpath(home)
 
     def test_traversal_outside_home_rejected(self):
         with pytest.raises(ValueError, match='outside allowed directories'):
-            xtap_core.validate_output_dir('/etc/cron.d/evil')
+            xport_core.validate_output_dir('/etc/cron.d/evil')
 
     def test_dot_dot_traversal_rejected(self):
         home = os.path.expanduser('~')
         with pytest.raises(ValueError, match='outside allowed directories'):
             # Enough '..' to escape home
-            xtap_core.validate_output_dir(os.path.join(home, '..', '..', 'tmp', 'pwned'))
+            xport_core.validate_output_dir(os.path.join(home, '..', '..', 'tmp', 'pwned'))
 
     def test_absolute_path_outside_home_rejected(self):
         with pytest.raises(ValueError, match='outside allowed directories'):
-            xtap_core.validate_output_dir('/tmp/pwned')
+            xport_core.validate_output_dir('/tmp/pwned')
 
     def test_resolve_output_dir_rejects_traversal(self):
         with pytest.raises(ValueError, match='outside allowed directories'):
-            xtap_core.resolve_output_dir('/etc/evil', '/default', set(), set())
+            xport_core.resolve_output_dir('/etc/evil', '/default', set(), set())
 
     def test_default_output_dir_allowed(self):
-        result = xtap_core.validate_output_dir(xtap_core.DEFAULT_OUTPUT_DIR)
-        assert result == os.path.realpath(xtap_core.DEFAULT_OUTPUT_DIR)
+        result = xport_core.validate_output_dir(xport_core.DEFAULT_OUTPUT_DIR)
+        assert result == os.path.realpath(xport_core.DEFAULT_OUTPUT_DIR)
 
 
 # ---------------------------------------------------------------------------
@@ -264,7 +265,7 @@ class TestValidateOutputDir:
 
 class TestWriteLog:
     def test_basic_write(self, tmp_path):
-        count = xtap_core.write_log(['line one', 'line two'], str(tmp_path))
+        count = xport_core.write_log(['line one', 'line two'], str(tmp_path))
         assert count == 2
         files = list(tmp_path.glob('debug-*.log'))
         assert len(files) == 1
@@ -273,14 +274,14 @@ class TestWriteLog:
         assert 'line two\n' in content
 
     def test_appends(self, tmp_path):
-        xtap_core.write_log(['first'], str(tmp_path))
-        xtap_core.write_log(['second'], str(tmp_path))
+        xport_core.write_log(['first'], str(tmp_path))
+        xport_core.write_log(['second'], str(tmp_path))
         files = list(tmp_path.glob('debug-*.log'))
         lines = files[0].read_text().strip().split('\n')
         assert len(lines) == 2
 
     def test_empty_list(self, tmp_path):
-        count = xtap_core.write_log([], str(tmp_path))
+        count = xport_core.write_log([], str(tmp_path))
         assert count == 0
 
 
@@ -291,38 +292,38 @@ class TestWriteLog:
 
 class TestWriteDump:
     def test_basic_write(self, tmp_path):
-        path = xtap_core.write_dump('test.json', '{"key": "value"}', str(tmp_path))
+        path = xport_core.write_dump('test.json', '{"key": "value"}', str(tmp_path))
         assert os.path.exists(path)
         assert (tmp_path / 'test.json').read_text() == '{"key": "value"}'
 
     def test_overwrites_existing(self, tmp_path):
-        xtap_core.write_dump('test.json', 'old', str(tmp_path))
-        xtap_core.write_dump('test.json', 'new', str(tmp_path))
+        xport_core.write_dump('test.json', 'old', str(tmp_path))
+        xport_core.write_dump('test.json', 'new', str(tmp_path))
         assert (tmp_path / 'test.json').read_text() == 'new'
 
     def test_traversal_filename_stripped(self, tmp_path):
-        path = xtap_core.write_dump('../../.ssh/authorized_keys', 'data', str(tmp_path))
+        path = xport_core.write_dump('../../.ssh/authorized_keys', 'data', str(tmp_path))
         # Traversal stripped — writes to out_dir/authorized_keys
         assert path == os.path.join(str(tmp_path), 'authorized_keys')
         assert (tmp_path / 'authorized_keys').read_text() == 'data'
 
     def test_absolute_filename_stripped(self, tmp_path):
-        path = xtap_core.write_dump('/etc/cron.d/evil', 'data', str(tmp_path))
+        path = xport_core.write_dump('/etc/cron.d/evil', 'data', str(tmp_path))
         # Should write to out_dir/evil, not /etc/cron.d/evil
         assert path == os.path.join(str(tmp_path), 'evil')
         assert (tmp_path / 'evil').read_text() == 'data'
 
     def test_empty_filename_rejected(self, tmp_path):
         with pytest.raises(ValueError, match='Invalid dump filename'):
-            xtap_core.write_dump('', 'data', str(tmp_path))
+            xport_core.write_dump('', 'data', str(tmp_path))
 
     def test_dot_filename_rejected(self, tmp_path):
         with pytest.raises(ValueError, match='Invalid dump filename'):
-            xtap_core.write_dump('.', 'data', str(tmp_path))
+            xport_core.write_dump('.', 'data', str(tmp_path))
 
     def test_dotdot_filename_rejected(self, tmp_path):
         with pytest.raises(ValueError, match='Invalid dump filename'):
-            xtap_core.write_dump('..', 'data', str(tmp_path))
+            xport_core.write_dump('..', 'data', str(tmp_path))
 
 
 # ---------------------------------------------------------------------------
@@ -332,16 +333,16 @@ class TestWriteDump:
 
 class TestTestPath:
     def test_writable_dir(self, tmp_path):
-        xtap_core.test_path(str(tmp_path))  # should not raise
+        xport_core.test_path(str(tmp_path))  # should not raise
 
     def test_creates_dir(self, tmp_path):
         new_dir = str(tmp_path / 'sub' / 'dir')
-        xtap_core.test_path(new_dir)
+        xport_core.test_path(new_dir)
         assert os.path.isdir(new_dir)
 
     def test_no_leftover_file(self, tmp_path):
-        xtap_core.test_path(str(tmp_path))
-        leftover = [f for f in os.listdir(str(tmp_path)) if f.startswith('.xtap-write-test')]
+        xport_core.test_path(str(tmp_path))
+        leftover = [f for f in os.listdir(str(tmp_path)) if f.startswith('.xport-write-test')]
         assert leftover == [], f'Sentinel not cleaned up: {leftover}'
 
     def test_cleanup_tolerates_missing_sentinel(self, tmp_path, monkeypatch):
@@ -354,7 +355,7 @@ class TestTestPath:
             original_remove(path)
 
         monkeypatch.setattr(os, 'remove', remove_twice)
-        xtap_core.test_path(str(tmp_path))  # should not raise
+        xport_core.test_path(str(tmp_path))  # should not raise
 
 
 # ---------------------------------------------------------------------------
@@ -364,33 +365,33 @@ class TestTestPath:
 
 class TestGetDownloadStatus:
     def test_unknown_id(self):
-        result = xtap_core.get_download_status('nonexistent-id')
+        result = xport_core.get_download_status('nonexistent-id')
         assert result == {'status': 'unknown'}
 
     def test_known_download(self):
-        xtap_core._downloads['test-dl'] = {
+        xport_core._downloads['test-dl'] = {
             'status': 'downloading',
             'progress': 50.0,
             'path': None,
             'error': None,
         }
-        result = xtap_core.get_download_status('test-dl')
+        result = xport_core.get_download_status('test-dl')
         assert result['status'] == 'downloading'
         assert result['progress'] == 50.0
         # Clean up
-        del xtap_core._downloads['test-dl']
+        del xport_core._downloads['test-dl']
 
     def test_completed_download(self):
-        xtap_core._downloads['test-done'] = {
+        xport_core._downloads['test-done'] = {
             'status': 'done',
             'progress': 100,
             'path': '/tmp/video.mp4',
             'error': None,
         }
-        result = xtap_core.get_download_status('test-done')
+        result = xport_core.get_download_status('test-done')
         assert result['status'] == 'done'
         assert result['path'] == '/tmp/video.mp4'
-        del xtap_core._downloads['test-done']
+        del xport_core._downloads['test-done']
 
 
 # ---------------------------------------------------------------------------
@@ -400,7 +401,7 @@ class TestGetDownloadStatus:
 
 def _feed_lines(lines):
     """Helper: feed a list of lines into a fresh _YtdlpProgress tracker."""
-    t = xtap_core._YtdlpProgress()
+    t = xport_core._YtdlpProgress()
     history = []
     for line in lines:
         t.feed(line)
@@ -584,12 +585,12 @@ class TestYtdlpProgressMerger:
 
 class TestPhotoFilename:
     def test_strips_orig_suffix(self):
-        assert xtap_core._photo_filename(
+        assert xport_core._photo_filename(
             'https://pbs.twimg.com/media/HGK3a3qbAAADTqD.jpg:orig'
         ) == 'HGK3a3qbAAADTqD.jpg'
 
     def test_strips_large_suffix(self):
-        assert xtap_core._photo_filename(
+        assert xport_core._photo_filename(
             'https://pbs.twimg.com/media/abc.png:large'
         ) == 'abc.png'
 
@@ -597,21 +598,21 @@ class TestPhotoFilename:
         # All Twitter image size suffixes — leaving any unstripped would put
         # a colon in the filename, which is illegal on NTFS.
         for suffix in ('orig', 'large', 'medium', 'small', 'thumb', 'tiny'):
-            assert xtap_core._photo_filename(
+            assert xport_core._photo_filename(
                 f'https://pbs.twimg.com/media/abc.jpg:{suffix}'
             ) == 'abc.jpg', f'failed for :{suffix}'
 
     def test_no_suffix(self):
-        assert xtap_core._photo_filename(
+        assert xport_core._photo_filename(
             'https://pbs.twimg.com/media/abc.jpg'
         ) == 'abc.jpg'
 
     def test_empty_returns_none(self):
-        assert xtap_core._photo_filename('') is None
-        assert xtap_core._photo_filename(None) is None
+        assert xport_core._photo_filename('') is None
+        assert xport_core._photo_filename(None) is None
 
     def test_url_with_no_path(self):
-        assert xtap_core._photo_filename('https://pbs.twimg.com/') is None
+        assert xport_core._photo_filename('https://pbs.twimg.com/') is None
 
 
 class TestCollectImageJobs:
@@ -622,7 +623,7 @@ class TestCollectImageJobs:
                 {'type': 'photo', 'url': 'https://pbs.twimg.com/media/abc.jpg:orig'},
             ],
         }]
-        pending = xtap_core.collect_image_jobs(tweets, str(tmp_path))
+        pending = xport_core.collect_image_jobs(tweets, str(tmp_path))
         # Top-level photo media is NOT mutated — the path is convention-derived
         # and consumers can reconstruct it from id + basename(url).
         assert 'local_path' not in tweets[0]['media'][0]
@@ -639,18 +640,18 @@ class TestCollectImageJobs:
                 {'type': 'video', 'url': 'https://video.twimg.com/foo.mp4'},
             ],
         }]
-        pending = xtap_core.collect_image_jobs(tweets, str(tmp_path))
+        pending = xport_core.collect_image_jobs(tweets, str(tmp_path))
         assert pending == []
         assert 'local_path' not in tweets[0]['media'][0]
 
     def test_skips_tweet_without_id(self, tmp_path):
         tweets = [{'media': [{'type': 'photo', 'url': 'https://pbs.twimg.com/media/x.jpg'}]}]
-        pending = xtap_core.collect_image_jobs(tweets, str(tmp_path))
+        pending = xport_core.collect_image_jobs(tweets, str(tmp_path))
         assert pending == []
 
     def test_handles_missing_media(self, tmp_path):
         tweets = [{'id': '123'}, {'id': '456', 'media': []}]
-        assert xtap_core.collect_image_jobs(tweets, str(tmp_path)) == []
+        assert xport_core.collect_image_jobs(tweets, str(tmp_path)) == []
 
     def test_enqueues_article_media(self, tmp_path):
         tweets = [{
@@ -670,7 +671,7 @@ class TestCollectImageJobs:
                 ],
             },
         }]
-        pending = xtap_core.collect_image_jobs(tweets, str(tmp_path))
+        pending = xport_core.collect_image_jobs(tweets, str(tmp_path))
         assert [p['rel_path'] for p in pending] == [
             'media/999/HGxr957a0AAzHOk.jpg',
             'media/999/HGxr2u5a8AANAOy.jpg',
@@ -681,11 +682,11 @@ class TestCollectImageJobs:
             'id': '999',
             'article': {'media': [{'url': 'https://pbs.twimg.com/media/x.jpg'}]},
         }]
-        assert xtap_core.collect_image_jobs(tweets, str(tmp_path)) == []
+        assert xport_core.collect_image_jobs(tweets, str(tmp_path)) == []
 
     def test_skips_photo_without_url(self, tmp_path):
         tweets = [{'id': '123', 'media': [{'type': 'photo', 'url': None}]}]
-        pending = xtap_core.collect_image_jobs(tweets, str(tmp_path))
+        pending = xport_core.collect_image_jobs(tweets, str(tmp_path))
         assert pending == []
         assert 'local_path' not in tweets[0]['media'][0]
 
@@ -694,7 +695,7 @@ class TestCollectImageJobs:
             'id': '../../etc',
             'media': [{'type': 'photo', 'url': 'https://pbs.twimg.com/media/x.jpg'}],
         }]
-        pending = xtap_core.collect_image_jobs(tweets, str(tmp_path))
+        pending = xport_core.collect_image_jobs(tweets, str(tmp_path))
         assert pending == []
         assert 'local_path' not in tweets[0]['media'][0]
 
@@ -706,7 +707,7 @@ class TestCollectImageJobs:
                 'local_path': '../../../../etc/passwd',
             }]},
         }]
-        pending = xtap_core.collect_image_jobs(tweets, str(tmp_path))
+        pending = xport_core.collect_image_jobs(tweets, str(tmp_path))
         assert pending == []
         # Unsafe local_path is stripped so the JSONL doesn't carry it.
         assert 'local_path' not in tweets[0]['article']['media'][0]
@@ -719,7 +720,7 @@ class TestCollectImageJobs:
                 'local_path': '/etc/passwd',
             }]},
         }]
-        pending = xtap_core.collect_image_jobs(tweets, str(tmp_path))
+        pending = xport_core.collect_image_jobs(tweets, str(tmp_path))
         assert pending == []
         assert 'local_path' not in tweets[0]['article']['media'][0]
 
@@ -729,7 +730,7 @@ class TestCollectImageJobs:
             'id': '123',
             'media': [{'type': 'photo', 'url': 'https://pbs.twimg.com/media/..'}],
         }]
-        pending = xtap_core.collect_image_jobs(tweets, str(tmp_path))
+        pending = xport_core.collect_image_jobs(tweets, str(tmp_path))
         assert pending == []
         assert 'local_path' not in tweets[0]['media'][0]
 
@@ -737,12 +738,12 @@ class TestCollectImageJobs:
         # Force _is_safe_rel_path to reject so we exercise the top-level skip
         # branch (it is otherwise unreachable because tweet_id and filename
         # are validated upstream).
-        monkeypatch.setattr(xtap_core, '_is_safe_rel_path', lambda _o, _r: False)
+        monkeypatch.setattr(xport_core, '_is_safe_rel_path', lambda _o, _r: False)
         tweets = [{
             'id': '123',
             'media': [{'type': 'photo', 'url': 'https://pbs.twimg.com/media/abc.jpg'}],
         }]
-        pending = xtap_core.collect_image_jobs(tweets, str(tmp_path))
+        pending = xport_core.collect_image_jobs(tweets, str(tmp_path))
         assert pending == []
 
     def test_skips_non_dict_article_media_item(self, tmp_path):
@@ -751,64 +752,64 @@ class TestCollectImageJobs:
             'article': {'media': ['not-a-dict', 42, None]},
         }]
         # Must not raise on non-dict items.
-        assert xtap_core.collect_image_jobs(tweets, str(tmp_path)) == []
+        assert xport_core.collect_image_jobs(tweets, str(tmp_path)) == []
 
 
 class TestPhotoFilenameHardening:
     def test_basename_strip_traversal(self):
         # urlparse + basename collapses path segments, but our explicit
         # regex/blocklist must still reject these for defense in depth.
-        assert xtap_core._photo_filename('https://pbs.twimg.com/media/..') is None
-        assert xtap_core._photo_filename('https://pbs.twimg.com/media/.') is None
-        assert xtap_core._photo_filename('https://pbs.twimg.com/.hidden.jpg') is None
+        assert xport_core._photo_filename('https://pbs.twimg.com/media/..') is None
+        assert xport_core._photo_filename('https://pbs.twimg.com/media/.') is None
+        assert xport_core._photo_filename('https://pbs.twimg.com/.hidden.jpg') is None
 
     def test_safe_rel_path_blocks_absolute(self, tmp_path):
-        assert xtap_core._is_safe_rel_path(str(tmp_path), '/etc/passwd') is False
+        assert xport_core._is_safe_rel_path(str(tmp_path), '/etc/passwd') is False
 
     def test_safe_rel_path_blocks_traversal(self, tmp_path):
-        assert xtap_core._is_safe_rel_path(str(tmp_path), '../../etc/passwd') is False
+        assert xport_core._is_safe_rel_path(str(tmp_path), '../../etc/passwd') is False
 
     def test_safe_rel_path_allows_normal(self, tmp_path):
-        assert xtap_core._is_safe_rel_path(str(tmp_path), 'media/123/abc.jpg') is True
+        assert xport_core._is_safe_rel_path(str(tmp_path), 'media/123/abc.jpg') is True
 
 
 class TestUrlAllowlist:
     def test_allows_pbs_twimg(self):
-        assert xtap_core._is_allowed_url('https://pbs.twimg.com/media/x.jpg') is True
+        assert xport_core._is_allowed_url('https://pbs.twimg.com/media/x.jpg') is True
 
     def test_blocks_other_host(self):
-        assert xtap_core._is_allowed_url('https://evil.example.com/x.jpg') is False
+        assert xport_core._is_allowed_url('https://evil.example.com/x.jpg') is False
 
     def test_blocks_http_scheme(self):
-        assert xtap_core._is_allowed_url('http://pbs.twimg.com/media/x.jpg') is False
+        assert xport_core._is_allowed_url('http://pbs.twimg.com/media/x.jpg') is False
 
     def test_blocks_file_scheme(self):
-        assert xtap_core._is_allowed_url('file:///etc/passwd') is False
+        assert xport_core._is_allowed_url('file:///etc/passwd') is False
 
     def test_blocks_metadata_ip(self):
-        assert xtap_core._is_allowed_url('http://169.254.169.254/latest/meta-data/') is False
+        assert xport_core._is_allowed_url('http://169.254.169.254/latest/meta-data/') is False
 
     def test_blocks_none_or_empty(self):
-        assert xtap_core._is_allowed_url(None) is False
-        assert xtap_core._is_allowed_url('') is False
+        assert xport_core._is_allowed_url(None) is False
+        assert xport_core._is_allowed_url('') is False
 
 
 class TestEnvParsing:
     def test_env_int_falls_back_on_garbage(self, monkeypatch):
-        monkeypatch.setenv('XTAP_IMAGE_DELAY_MS', 'foo')
-        assert xtap_core._env_int('XTAP_IMAGE_DELAY_MS', 100) == 100
+        monkeypatch.setenv('XPORT_IMAGE_DELAY_MS', 'foo')
+        assert xport_core._env_int('XPORT_IMAGE_DELAY_MS', 100) == 100
 
     def test_env_int_uses_value_when_valid(self, monkeypatch):
-        monkeypatch.setenv('XTAP_IMAGE_DELAY_MS', '250')
-        assert xtap_core._env_int('XTAP_IMAGE_DELAY_MS', 100) == 250
+        monkeypatch.setenv('XPORT_IMAGE_DELAY_MS', '250')
+        assert xport_core._env_int('XPORT_IMAGE_DELAY_MS', 100) == 250
 
     def test_env_int_falls_back_on_empty(self, monkeypatch):
-        monkeypatch.setenv('XTAP_IMAGE_DELAY_MS', '')
-        assert xtap_core._env_int('XTAP_IMAGE_DELAY_MS', 100) == 100
+        monkeypatch.setenv('XPORT_IMAGE_DELAY_MS', '')
+        assert xport_core._env_int('XPORT_IMAGE_DELAY_MS', 100) == 100
 
     def test_env_float_falls_back_on_garbage(self, monkeypatch):
-        monkeypatch.setenv('XTAP_MAX_FILE_MB', 'big')
-        assert xtap_core._env_float('XTAP_MAX_FILE_MB', 50.0) == 50.0
+        monkeypatch.setenv('XPORT_MAX_FILE_MB', 'big')
+        assert xport_core._env_float('XPORT_MAX_FILE_MB', 50.0) == 50.0
 
 
 # ---------------------------------------------------------------------------
@@ -848,17 +849,17 @@ def _patch_opener(monkeypatch, fake_open):
     class _FakeOpener:
         def open(self, req, timeout=None):
             return fake_open(req, timeout=timeout)
-    monkeypatch.setattr(xtap_core, '_NO_REDIRECT_OPENER', _FakeOpener())
+    monkeypatch.setattr(xport_core, '_NO_REDIRECT_OPENER', _FakeOpener())
 
 
 @pytest.fixture
 def downloader(monkeypatch):
     """A fresh ImageDownloader with no rate-limit delay and no singleton state."""
-    monkeypatch.setenv('XTAP_IMAGE_DELAY_MS', '0')
-    monkeypatch.delenv('XTAP_MAX_MEDIA_MB', raising=False)
-    monkeypatch.delenv('XTAP_MAX_FILE_MB', raising=False)
-    xtap_core.reset_image_downloader()
-    return xtap_core.ImageDownloader()
+    monkeypatch.setenv('XPORT_IMAGE_DELAY_MS', '0')
+    monkeypatch.delenv('XPORT_MAX_MEDIA_MB', raising=False)
+    monkeypatch.delenv('XPORT_MAX_FILE_MB', raising=False)
+    xport_core.reset_image_downloader()
+    return xport_core.ImageDownloader()
 
 
 class TestImageDownloader:
@@ -935,7 +936,7 @@ class TestImageDownloader:
             return _FakeResponse(body)
 
         # Don't actually sleep through the backoff in tests.
-        monkeypatch.setattr(xtap_core.time, 'sleep', lambda s: None)
+        monkeypatch.setattr(xport_core.time, 'sleep', lambda s: None)
         _patch_opener(monkeypatch, fake_open)
         downloader.enqueue([{
             'tweet_id': '10',
@@ -957,7 +958,7 @@ class TestImageDownloader:
             attempts['n'] += 1
             raise urllib.error.HTTPError(req.full_url, 429, 'Too Many', {}, None)
 
-        monkeypatch.setattr(xtap_core.time, 'sleep', lambda s: None)
+        monkeypatch.setattr(xport_core.time, 'sleep', lambda s: None)
         _patch_opener(monkeypatch, fake_open)
         downloader.enqueue([{
             'tweet_id': '11',
@@ -1045,10 +1046,10 @@ class TestImageDownloader:
         assert not (tmp_path / '..' / 'etc').exists()
 
     def test_aborts_oversize_response(self, tmp_path, monkeypatch):
-        monkeypatch.setenv('XTAP_IMAGE_DELAY_MS', '0')
-        monkeypatch.setenv('XTAP_MAX_FILE_MB', '0.0001')  # ~104 bytes
-        xtap_core.reset_image_downloader()
-        dl = xtap_core.ImageDownloader()
+        monkeypatch.setenv('XPORT_IMAGE_DELAY_MS', '0')
+        monkeypatch.setenv('XPORT_MAX_FILE_MB', '0.0001')  # ~104 bytes
+        xport_core.reset_image_downloader()
+        dl = xport_core.ImageDownloader()
         big = b'x' * 5000
         _patch_opener(monkeypatch, lambda *a, **kw: _FakeResponse(big))
         dl.enqueue([{
@@ -1063,10 +1064,10 @@ class TestImageDownloader:
         assert entries[0]['status'] == 'error:too_large'
 
     def test_rejects_oversize_via_content_length(self, tmp_path, monkeypatch):
-        monkeypatch.setenv('XTAP_IMAGE_DELAY_MS', '0')
-        monkeypatch.setenv('XTAP_MAX_FILE_MB', '0.0001')
-        xtap_core.reset_image_downloader()
-        dl = xtap_core.ImageDownloader()
+        monkeypatch.setenv('XPORT_IMAGE_DELAY_MS', '0')
+        monkeypatch.setenv('XPORT_MAX_FILE_MB', '0.0001')
+        xport_core.reset_image_downloader()
+        dl = xport_core.ImageDownloader()
         # Server claims a huge body up-front — we reject without reading it.
         _patch_opener(monkeypatch, lambda *a, **kw: _FakeResponse(b'', content_length=10_000_000))
         dl.enqueue([{
@@ -1081,7 +1082,7 @@ class TestImageDownloader:
     def test_redirect_handler_raises_for_redirect(self, monkeypatch):
         """The custom HTTPRedirectHandler must turn redirects into errors."""
         import urllib.error
-        h = xtap_core._NoRedirectHandler()
+        h = xport_core._NoRedirectHandler()
         # Build a fake request and assert HTTPError is raised on redirect attempt.
         req = urllib.request.Request('https://pbs.twimg.com/media/x.jpg')
         with pytest.raises(urllib.error.HTTPError):
@@ -1090,14 +1091,14 @@ class TestImageDownloader:
 
 class TestImageDownloaderRateLimit:
     def test_sleeps_to_enforce_inter_request_delay(self, tmp_path, monkeypatch):
-        monkeypatch.setenv('XTAP_IMAGE_DELAY_MS', '50')
-        xtap_core.reset_image_downloader()
-        dl = xtap_core.ImageDownloader()
+        monkeypatch.setenv('XPORT_IMAGE_DELAY_MS', '50')
+        xport_core.reset_image_downloader()
+        dl = xport_core.ImageDownloader()
         sleeps = []
         # Pretend we just made a request right now so the next job has to wait.
         dl._last_request_at = 1000.0
-        monkeypatch.setattr(xtap_core.time, 'monotonic', lambda: 1000.0)
-        monkeypatch.setattr(xtap_core.time, 'sleep', lambda s: sleeps.append(s))
+        monkeypatch.setattr(xport_core.time, 'monotonic', lambda: 1000.0)
+        monkeypatch.setattr(xport_core.time, 'sleep', lambda s: sleeps.append(s))
         _patch_opener(monkeypatch, lambda *a, **kw: _FakeResponse(b'x'))
         dl.enqueue([{
             'tweet_id': '20',
@@ -1134,8 +1135,50 @@ class TestImageDownloaderManifest:
 
 class TestImageDownloaderSingleton:
     def test_get_returns_same_instance(self, monkeypatch):
-        xtap_core.reset_image_downloader()
-        a = xtap_core.get_image_downloader()
-        b = xtap_core.get_image_downloader()
+        xport_core.reset_image_downloader()
+        a = xport_core.get_image_downloader()
+        b = xport_core.get_image_downloader()
         assert a is b
-        xtap_core.reset_image_downloader()
+        xport_core.reset_image_downloader()
+
+
+class TestForwardTweetsToApi:
+    def test_disabled_without_url_or_token(self, monkeypatch):
+        monkeypatch.setattr(xport_core, 'DEFAULT_API_URL', '')
+        monkeypatch.setattr(xport_core, 'DEFAULT_INGEST_TOKEN', '')
+        assert xport_core.forward_tweets_to_api([{'id': '1'}]) == {'enabled': False}
+
+    def test_posts_tweets_to_ingest_endpoint(self, monkeypatch):
+        monkeypatch.setattr(xport_core, 'DEFAULT_API_URL', 'https://xport.example')
+        monkeypatch.setattr(xport_core, 'DEFAULT_INGEST_TOKEN', 'secret')
+        monkeypatch.setenv('XPORT_API_RETRIES', '0')
+
+        captured = {}
+
+        class _Response:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b'{"ok":true,"upserted":1,"batch_id":"batch-1"}'
+
+        def fake_urlopen(req, timeout):
+            captured['url'] = req.full_url
+            captured['auth'] = req.get_header('Authorization')
+            captured['body'] = json.loads(req.data.decode('utf-8'))
+            captured['timeout'] = timeout
+            return _Response()
+
+        monkeypatch.setattr(urllib.request, 'urlopen', fake_urlopen)
+
+        result = xport_core.forward_tweets_to_api([{'id': '1'}], source='test')
+
+        assert result == {'enabled': True, 'ok': True, 'count': 1, 'batch_id': 'batch-1'}
+        assert captured['url'] == 'https://xport.example/api/ingest/tweets'
+        assert captured['auth'] == 'Bearer secret'
+        assert captured['body'] == {'source': 'test', 'tweets': [{'id': '1'}]}

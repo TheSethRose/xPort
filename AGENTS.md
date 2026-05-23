@@ -1,10 +1,10 @@
-# AGENTS.md - xTap
+# AGENTS.md - XPort
 
 ## What This Is
 
-xTap is a browser extension (Chrome + Firefox) that passively captures tweets from X/Twitter by intercepting GraphQL API responses the browser already receives. No scraping, no extra requests — just structured JSONL output of what the user sees.
+XPort is a browser extension (Chrome + Firefox), local daemon, and hosted ingestion API that passively captures tweets from X/Twitter by intercepting GraphQL API responses the browser already receives. No scraping, no extra browser-side requests — just structured JSONL output of what the user sees, optionally forwarded to PostgreSQL through the hosted API.
 
-**Repo:** github.com/mkubicek/xTap
+**Repo:** github.com/TheSethRose/xPort
 **License:** MIT (public repo)
 
 ## Architecture
@@ -26,47 +26,52 @@ background.js (Service Worker, ES module)
   │  Transport: HTTP daemon only (reprobes on failure with 30s cooldown)
   ▼
 ┌─── HTTP transport ─────────────────────────────────────────────┐
-│ xtap_daemon.py (127.0.0.1:17381)                               │
+│ xport_daemon.py (127.0.0.1:17381)                               │
 │   Managed by launchd (macOS), systemd (Linux), Scheduled Task  │
-│   (Windows). Bearer token auth from ~/.xtap/secret             │
+│   (Windows). Bearer token auth from ~/.xport/secret             │
 │   Endpoints: GET /status, POST /tweets, /log, /test-path,     │
 │   /check-ytdlp, /download-video, /download-status             │
 │   /tweets accepts image_download:true to opt-in to background │
 │   image fetches; returns images_queued in the response.       │
 └────────────────────────────────────────────────────────────────┘
 ┌─── Native messaging (token bootstrap only) ───────────────────┐
-│ xtap_host.py (Python, stdio)                                   │
+│ xport_host.py (Python, stdio)                                   │
 │   Browser native messaging protocol (Chrome/Firefox)           │
 │   Serves GET_TOKEN to bootstrap HTTP transport                 │
-│   Crashes logged to ~/.xtap/host-error.log                    │
+│   Crashes logged to ~/.xport/host-error.log                    │
 └────────────────────────────────────────────────────────────────┘
-  │  xtap_daemon.py uses shared logic from xtap_core.py
+  │  xport_daemon.py uses shared logic from xport_core.py
   ▼
 tweets-YYYY-MM-DD.jsonl  (daily rotation)
 debug-YYYY-MM-DD.log     (when debug logging enabled)
 media/<tweet_id>/*       (when image download enabled)
 media-manifest.jsonl     (when image download enabled — append-only download log)
+XPort API (optional, configured with XPORT_API_URL + XPORT_INGEST_TOKEN)
+  │  POST /api/ingest/tweets
+  ▼
+PostgreSQL tables: tweets, ingest_batches
 ```
 
 ### Key Design Decisions
 
 - **Two content scripts (MAIN + ISOLATED):** MV3 requires this split. MAIN world can patch browser APIs but can't use chrome.runtime. ISOLATED world bridges the gap.
 - **Random event channel:** The CustomEvent name is generated per page load (`'_' + Math.random().toString(36).slice(2)`) and passed via a `<meta>` tag that's immediately removed. Avoids predictable DOM markers.
-- **HTTP-only transport:** All data flows through the HTTP daemon (`xtap_daemon.py`), managed by launchd (macOS), systemd (Linux), or Scheduled Task (Windows). On macOS, it runs outside browser TCC sandboxes, allowing writes to protected paths. If the daemon goes down, tweets are buffered in memory and the extension reprobes every 30 seconds until the daemon recovers.
-- **Token bootstrap via native messaging:** On first run, the extension connects to `xtap_host.py` via native messaging to request `GET_TOKEN` (reads `~/.xtap/secret`). The token is cached in `chrome.storage.local` for subsequent HTTP requests. The native host handles nothing else — all data goes through HTTP.
-- **Shared core logic:** `xtap_core.py` contains all file I/O logic (load seen IDs, resolve output dir, write tweets/logs, test path), used by `xtap_daemon.py`.
+- **HTTP-only transport:** All data flows through the HTTP daemon (`xport_daemon.py`), managed by launchd (macOS), systemd (Linux), or Scheduled Task (Windows). On macOS, it runs outside browser TCC sandboxes, allowing writes to protected paths. If the daemon goes down, tweets are buffered in memory and the extension reprobes every 30 seconds until the daemon recovers.
+- **Hosted SQL sync:** When `XPORT_API_URL` and `XPORT_INGEST_TOKEN` are configured on the daemon, successful local tweet batches are forwarded to `POST /api/ingest/tweets`. Local JSONL remains the fallback source of truth if forwarding fails.
+- **Token bootstrap via native messaging:** On first run, the extension connects to `xport_host.py` via native messaging to request `GET_TOKEN` (reads `~/.xport/secret`). The token is cached in `chrome.storage.local` for subsequent HTTP requests. The native host handles nothing else — all data goes through HTTP.
+- **Shared core logic:** `xport_core.py` contains all file I/O logic (load seen IDs, resolve output dir, write tweets/logs, test path), used by `xport_daemon.py`.
 - **Environment detection:** `isDevMode = !chrome.runtime.getManifest().update_url` — packed CWS extensions have `update_url`, unpacked don't. Used to switch seenIds storage between session (dev) and local (production).
 - **Volatile dev cache:** In dev mode (unpacked), `seenIds` is stored in `chrome.storage.session`, which clears on extension reload. This eliminates the need to manually clear storage during development. Production behavior is unchanged (persisted to `chrome.storage.local`).
 - **Dedup in service worker:** Multiple tabs feed the same service worker. `seenIds` Set (max 50,000, FIFO eviction) prevents duplicates. In production, persisted to `chrome.storage.local` across sessions; in dev mode, uses volatile `chrome.storage.session`. Both host and daemon also load seen IDs from existing JSONL files on startup.
 - **Jittered flush:** Batch flush uses `setTimeout` with randomized interval (30s base + up to 50% jitter = 30–45s), re-randomized each cycle. Avoids clockwork-regular patterns.
 - **Path validation:** When the user sets a custom output directory, the service worker sends a `TEST_PATH` request to the HTTP daemon, which attempts `makedirs` + write/delete of a temp file before accepting the path.
-- **Error resilience:** The native host logs crashes to `~/.xtap/host-error.log` with Python version and traceback. The HTTP daemon returns error status codes and logs startup diagnostics (Python version, output dir, token status). When the daemon is unreachable, the extension shows a red "!" badge and buffers tweets until the next successful reprobe (30s cooldown). The popup auto-refreshes every 2 seconds to reflect transport state changes.
-- **Daemon debug logging:** Set `XTAP_LOG_LEVEL=debug` to get per-request logging (method, path, duration, tweet counts, tracebacks). Configured via environment variable in the service template (launchd/systemd). Re-run `install.sh` after changing.
-- **Image download tuning (env vars, all optional):** `XTAP_IMAGE_DELAY_MS` (default 100) sets the inter-request delay for the background image worker. `XTAP_MAX_FILE_MB` (default 50) caps the size of a single image; the worker aborts mid-stream and deletes the `.part` file when exceeded. `XTAP_MAX_MEDIA_MB` (default unset = unlimited) caps the cumulative bytes downloaded per process; further jobs log `skipped:quota`. Bad values fall back to defaults with a stderr warning instead of crashing the daemon.
+- **Error resilience:** The native host logs crashes to `~/.xport/host-error.log` with Python version and traceback. The HTTP daemon returns error status codes and logs startup diagnostics (Python version, output dir, token status). When the daemon is unreachable, the extension shows a red "!" badge and buffers tweets until the next successful reprobe (30s cooldown). The popup auto-refreshes every 2 seconds to reflect transport state changes.
+- **Daemon debug logging:** Set `XPORT_LOG_LEVEL=debug` to get per-request logging (method, path, duration, tweet counts, tracebacks). Configured via environment variable in the service template (launchd/systemd). Re-run `install.sh` after changing.
+- **Image download tuning (env vars, all optional):** `XPORT_IMAGE_DELAY_MS` (default 100) sets the inter-request delay for the background image worker. `XPORT_MAX_FILE_MB` (default 50) caps the size of a single image; the worker aborts mid-stream and deletes the `.part` file when exceeded. `XPORT_MAX_MEDIA_MB` (default unset = unlimited) caps the cumulative bytes downloaded per process; further jobs log `skipped:quota`. Bad values fall back to defaults with a stderr warning instead of crashing the daemon.
 
 ## Stealth Constraints
 
-**These are non-negotiable. xTap must remain completely passive.**
+**These are non-negotiable. XPort must remain completely passive.**
 
 1. **Zero extra network requests** — never fetch, POST, or call any X/Twitter endpoint. The extension only reads responses the browser already received.
 2. **Native-looking patches** — `toString()` on patched `fetch` returns `'function fetch() { [native code] }'`. `XHR.open` toString returns the original native string. `fetch.name` is set to `'fetch'` via `Object.defineProperty`.
@@ -88,7 +93,7 @@ The browser-side capture path stays passive. These carve-outs run on the daemon,
 ## File Structure
 
 ```
-xTap/
+XPort/
 ├── manifest.json              # Chrome MV3 manifest (permissions: storage, nativeMessaging)
 ├── manifest.firefox.json      # Firefox MV3 manifest (generated — do not edit)
 ├── background.js              # Service worker (ES module) - transport, parsing, dedup
@@ -99,18 +104,22 @@ xTap/
 ├── icons/                     # Extension icons (16, 48, 128)
 ├── lib/
 │   └── tweet-parser.js        # GraphQL response → normalized tweet objects
+├── api/
+│   └── xport_api.py           # Hosted PostgreSQL ingestion API
+├── Dockerfile                 # API container for Coolify
+├── requirements.txt           # API runtime dependencies
 └── native-host/
-    ├── xtap_core.py              # Shared file I/O logic (used by host + daemon)
-    ├── xtap_host.py              # Native messaging host — token bootstrap only (Python, stdio)
-    ├── xtap_daemon.py            # HTTP daemon (127.0.0.1:17381)
-    ├── com.xtap.daemon.plist     # launchd plist template (macOS)
-    ├── com.xtap.daemon.service   # systemd unit template (Linux)
-    ├── com.xtap.host.json        # Native messaging host manifest (Chrome)
-    ├── com.xtap.host.firefox.json # Native messaging host manifest (Firefox)
+    ├── xport_core.py              # Shared file I/O logic (used by host + daemon)
+    ├── xport_host.py              # Native messaging host — token bootstrap only (Python, stdio)
+    ├── xport_daemon.py            # HTTP daemon (127.0.0.1:17381)
+    ├── com.xport.daemon.plist     # launchd plist template (macOS)
+    ├── com.xport.daemon.service   # systemd unit template (Linux)
+    ├── com.xport.host.json        # Native messaging host manifest (Chrome)
+    ├── com.xport.host.firefox.json # Native messaging host manifest (Firefox)
     ├── install.sh                # macOS/Linux installer (+ daemon)
     ├── install.ps1               # Windows installer (+ daemon)
-    ├── xtap_host.bat             # Windows native host wrapper
-    └── xtap_daemon.bat           # Windows daemon wrapper
+    ├── xport_host.bat             # Windows native host wrapper
+    └── xport_daemon.bat           # Windows daemon wrapper
 ```
 
 ## Supported Endpoints
@@ -182,7 +191,7 @@ Notes: `media[].duration_ms` only present for videos. `views` may be `null`. For
 
 On macOS, native messaging hosts can inherit browser TCC sandbox restrictions. After browser restarts, writes to protected paths (`~/Documents`, iCloud Drive, etc.) can fail with `PermissionError`.
 
-**Solution:** The HTTP daemon (`xtap_daemon.py`) runs via launchd, independent of the browser process tree. It has its own TCC entitlements and can write to protected paths after a one-time macOS permission prompt. The daemon is the sole data transport — if it's not running, the extension buffers tweets and shows an error.
+**Solution:** The HTTP daemon (`xport_daemon.py`) runs via launchd, independent of the browser process tree. It has its own TCC entitlements and can write to protected paths after a one-time macOS permission prompt. The daemon is the sole data transport — if it's not running, the extension buffers tweets and shows an error.
 
 ### Tombstone tweets
 
@@ -191,7 +200,7 @@ X sometimes returns `TimelineTweet` entries where `tweet_results.result` is miss
 ## Development Notes
 
 - **No build step** — plain JS, no bundler, no transpilation. Load and go.
-- **Testing:** `python3 -m pytest tests/ -v && node --test tests/*.test.mjs`. Run after every change. CI runs these on every push to main with coverage uploaded to Codecov. For manual browser testing, load unpacked in Chrome (`chrome://extensions`) or as a temporary add-on in Firefox (`about:debugging#/runtime/this-firefox`) using `manifest.firefox.json`. Chrome extension IDs vary per install; Firefox uses the fixed Gecko ID in `manifest.firefox.json`. Use the matching installer mode (`install.sh ... chrome|firefox`, `install.ps1 -Browser chrome|firefox`).
+- **Testing:** `uv run --with pytest --with 'psycopg[binary]==3.2.13' pytest tests/ -v && node --test tests/*.test.mjs`. Run after every change. CI runs these on every push to main with coverage uploaded to Codecov. For manual browser testing, load unpacked in Chrome (`chrome://extensions`) or as a temporary add-on in Firefox (`about:debugging#/runtime/this-firefox`) using `manifest.firefox.json`. Chrome extension IDs vary per install; Firefox uses the fixed Gecko ID in `manifest.firefox.json`. Use the matching installer mode (`install.sh ... chrome|firefox`, `install.ps1 -Browser chrome|firefox`).
 - **Parser golden test (fast, use for iteration):** `node --test tests/parser-golden.test.mjs` — runs `extractTweets` against all fixture scenarios in `tests/fixtures/sanitized/*/` and compares to golden `expected.jsonl`. Sub-second, reports field-level diffs on failure. Use this as the inner loop when modifying the parser.
 - **E2E test (slow, CI gate):** `cd tests/e2e && npm test` — launches Chromium + real extension + daemon + Fake X server. Auto-discovers all scenarios in `tests/fixtures/sanitized/`. Full pipeline integration proof.
 - **Fixtures:** Parser fixture packs live under `tests/fixtures/`. Keep raw captures in `tests/fixtures/private-raw/` only (gitignored) and commit only sanitized packs from `tests/fixtures/sanitized/`. The anonymization methodology and review checklist are documented in `tests/fixtures/FIXTURES.md`.
@@ -201,9 +210,9 @@ X sometimes returns `TimelineTweet` entries where `tweet_results.result` is miss
 - **Dev mode seenIds:** In dev mode, `seenIds` uses `chrome.storage.session` when available (volatile — clears on extension reload). If session storage APIs are unavailable, it safely falls back to `chrome.storage.local`.
 - **tweet-parser.js** is the most fragile file — it handles multiple GraphQL response shapes and X changes their API schema without notice. The recursive fallback (`findInstructionsRecursive`) catches many new endpoint shapes automatically, but field-level changes to tweet objects will need manual updates to `normalizeTweet()`.
 - **Service worker module:** `background.js` is loaded as an ES module (`"type": "module"` in manifest). It imports `tweet-parser.js` directly.
-- **HTTP daemon:** `xtap_daemon.py` binds `127.0.0.1:17381`. Auth token stored at `~/.xtap/secret` (mode 600). Managed by launchd (macOS: `launchctl kickstart -k gui/$(id -u)/com.xtap.daemon`), systemd (Linux: `systemctl --user restart com.xtap.daemon`), or Scheduled Task (Windows: `Stop-ScheduledTask -TaskName xTapDaemon; Start-ScheduledTask -TaskName xTapDaemon`). Logs: macOS/Windows at `~/.xtap/daemon-stderr.log`, Linux via `journalctl --user -u com.xtap.daemon`.
-- **Transport debugging:** The popup shows connection status and auto-refreshes every 2s. When transport is unavailable, the popup and debug dashboard show an actionable error message. Service worker console logs transport selection at startup and reprobe attempts. Daemon startup diagnostics are always logged to `~/.xtap/daemon-stderr.log`; set `XTAP_LOG_LEVEL=debug` for request-level detail.
-- **Release checklist:** (1) Bump `manifest.json` version, (2) bump `native-host/xtap_daemon.py` `VERSION`, (3) run `node scripts/build-firefox-manifest.js` to regenerate `manifest.firefox.json`. The manifest test validates version parity, so CI will catch a forgotten regeneration. (4) If any new files were added to the extension or native-host, **update the file list in `.github/workflows/release.yml`** — the release zip uses an explicit list, not a glob, so new files will be silently missing from releases if not added. (5) Follow the **Release procedure** below to publish.
+- **HTTP daemon:** `xport_daemon.py` binds `127.0.0.1:17381`. Auth token stored at `~/.xport/secret` (mode 600). Managed by launchd (macOS: `launchctl kickstart -k gui/$(id -u)/com.xport.daemon`), systemd (Linux: `systemctl --user restart com.xport.daemon`), or Scheduled Task (Windows: `Stop-ScheduledTask -TaskName XPortDaemon; Start-ScheduledTask -TaskName XPortDaemon`). Logs: macOS/Windows at `~/.xport/daemon-stderr.log`, Linux via `journalctl --user -u com.xport.daemon`.
+- **Transport debugging:** The popup shows connection status and auto-refreshes every 2s. When transport is unavailable, the popup and debug dashboard show an actionable error message. Service worker console logs transport selection at startup and reprobe attempts. Daemon startup diagnostics are always logged to `~/.xport/daemon-stderr.log`; set `XPORT_LOG_LEVEL=debug` for request-level detail.
+- **Release checklist:** (1) Bump `manifest.json` version, (2) bump `native-host/xport_daemon.py` `VERSION`, (3) run `node scripts/build-firefox-manifest.js` to regenerate `manifest.firefox.json`. The manifest test validates version parity, so CI will catch a forgotten regeneration. (4) If any new files were added to the extension or native-host, **update the file list in `.github/workflows/release.yml`** — the release zip uses an explicit list, not a glob, so new files will be silently missing from releases if not added. (5) Follow the **Release procedure** below to publish.
 - **Firefox manifest:** `manifest.firefox.json` is generated from `manifest.json` — never edit it directly. The generator script (`scripts/build-firefox-manifest.js`) swaps `service_worker` → `scripts` and adds Gecko metadata.
 
 ## Release Procedure
@@ -217,7 +226,7 @@ workflow auto-generate them.
 3. Pre-create the GitHub release as a draft with those notes:
    `gh release create vX.Y.Z --draft --title vX.Y.Z --notes-file /tmp/release-notes-vX.Y.Z.md`
 4. Push the tag: `git push origin vX.Y.Z`.
-5. The Release workflow detects the existing draft and uploads `xtap-X.Y.Z.zip` into it (no notes overwritten).
+5. The Release workflow detects the existing draft and uploads `xport-X.Y.Z.zip` into it (no notes overwritten).
 6. Verify the release page: zip attached, notes render correctly. Click **Publish release** when ready.
 7. Delete the local notes file and any merged feature branches.
 

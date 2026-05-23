@@ -3,7 +3,7 @@
 ## Scenario
 
 Basic timeline capture from a `HomeTimeline` response exercising the core
-xTap tweet parsing pipeline.
+XPort tweet parsing pipeline.
 
 ## What it covers
 

@@ -1,4 +1,4 @@
-"""Tests for native-host/xtap_daemon.py — request hardening (issue #7)."""
+"""Tests for native-host/xport_daemon.py — request hardening (issue #7)."""
 
 import json
 import os
@@ -10,8 +10,8 @@ import urllib.request
 import urllib.error
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'native-host'))
-import xtap_core
-import xtap_daemon
+import xport_core
+import xport_daemon
 
 
 # ---------------------------------------------------------------------------
@@ -24,17 +24,17 @@ TEST_TOKEN = 'test-token-for-daemon'
 @pytest.fixture(autouse=True)
 def _set_module_token():
     """Inject a known token into the daemon module for all tests."""
-    old = xtap_daemon._token
-    xtap_daemon._token = TEST_TOKEN
+    old = xport_daemon._token
+    xport_daemon._token = TEST_TOKEN
     yield
-    xtap_daemon._token = old
+    xport_daemon._token = old
 
 
 @pytest.fixture()
 def daemon_url():
     """Start DaemonHandler on an ephemeral port and return its base URL."""
     from http.server import ThreadingHTTPServer
-    server = ThreadingHTTPServer(('127.0.0.1', 0), xtap_daemon.DaemonHandler)
+    server = ThreadingHTTPServer(('127.0.0.1', 0), xport_daemon.DaemonHandler)
     port = server.server_address[1]
     t = threading.Thread(target=server.serve_forever, daemon=True)
     t.start()
@@ -133,7 +133,7 @@ class TestContentLengthValidation:
     def test_oversized_content_length(self, daemon_url):
         """Content-Length exceeding MAX_BODY_SIZE should return 413."""
         import http.client
-        huge_length = xtap_daemon.MAX_BODY_SIZE + 1
+        huge_length = xport_daemon.MAX_BODY_SIZE + 1
         conn = http.client.HTTPConnection('127.0.0.1', int(daemon_url.rsplit(':', 1)[1]))
         conn.putrequest('POST', '/tweets')
         conn.putheader('Content-Type', 'application/json')
@@ -168,7 +168,7 @@ class TestAuth:
     def test_content_length_checked_before_auth(self, daemon_url):
         """Oversized request should be rejected with 413 even without auth."""
         import http.client
-        huge_length = xtap_daemon.MAX_BODY_SIZE + 1
+        huge_length = xport_daemon.MAX_BODY_SIZE + 1
         conn = http.client.HTTPConnection('127.0.0.1', int(daemon_url.rsplit(':', 1)[1]))
         conn.putrequest('POST', '/tweets')
         conn.putheader('Content-Type', 'application/json')
@@ -200,11 +200,11 @@ class TestAuthorizedRequest:
     def test_valid_post_succeeds(self, daemon_url):
         """An authorized POST /tweets with valid body should succeed."""
         import tempfile
-        out_dir = tempfile.mkdtemp(dir=os.path.expanduser('~'), prefix='.xtap-test-')
+        out_dir = tempfile.mkdtemp(dir=os.path.expanduser('~'), prefix='.xport-test-')
         try:
             status, body = _post(
                 daemon_url, '/tweets',
-                body={'outputDir': out_dir, 'tweets': [{'id': '1', 'text': 'hello'}]},
+                body={'outputDir': out_dir, 'tweets': [{'id': 'valid-post-1', 'text': 'hello'}]},
                 token=TEST_TOKEN,
             )
             assert status == 200
@@ -212,6 +212,34 @@ class TestAuthorizedRequest:
             assert body['count'] == 1
         finally:
             import shutil
+            shutil.rmtree(out_dir, ignore_errors=True)
+
+    def test_tweets_forward_to_api_when_configured(self, daemon_url, monkeypatch):
+        """POST /tweets includes remote forward result when API forwarding is configured."""
+        import shutil
+        import tempfile
+
+        out_dir = tempfile.mkdtemp(dir=os.path.expanduser('~'), prefix='.xport-test-')
+        forwarded = []
+
+        def fake_forward(tweets):
+            forwarded.extend(tweets)
+            return {'enabled': True, 'ok': True, 'count': len(tweets), 'batch_id': 'remote-1'}
+
+        monkeypatch.setattr(xport_daemon, 'forward_tweets_to_api', fake_forward)
+        try:
+            status, body = _post(
+                daemon_url, '/tweets',
+                body={'outputDir': out_dir, 'tweets': [{'id': 'forward-1', 'text': 'hello'}]},
+                token=TEST_TOKEN,
+            )
+            assert status == 200
+            assert body['ok'] is True
+            assert body['forwarded'] is True
+            assert body['remote_count'] == 1
+            assert body['remote_batch_id'] == 'remote-1'
+            assert forwarded == [{'id': 'forward-1', 'text': 'hello'}]
+        finally:
             shutil.rmtree(out_dir, ignore_errors=True)
 
     def test_zero_content_length_post(self, daemon_url):
@@ -236,14 +264,14 @@ class TestAuthorizedRequest:
         import shutil
         import tempfile
 
-        out_dir = tempfile.mkdtemp(dir=os.path.expanduser('~'), prefix='.xtap-test-')
+        out_dir = tempfile.mkdtemp(dir=os.path.expanduser('~'), prefix='.xport-test-')
         captured = []
 
         class _Fake:
             def enqueue(self, jobs, where):
                 captured.append((list(jobs), where))
 
-        monkeypatch.setattr(xtap_daemon, 'get_image_downloader', lambda: _Fake())
+        monkeypatch.setattr(xport_daemon, 'get_image_downloader', lambda: _Fake())
         try:
             tweet = {
                 'id': '42',
@@ -271,9 +299,9 @@ class TestAuthorizedRequest:
         import shutil
         import tempfile
 
-        out_dir = tempfile.mkdtemp(dir=os.path.expanduser('~'), prefix='.xtap-test-')
+        out_dir = tempfile.mkdtemp(dir=os.path.expanduser('~'), prefix='.xport-test-')
         called = []
-        monkeypatch.setattr(xtap_daemon, 'get_image_downloader', lambda: called.append(1))
+        monkeypatch.setattr(xport_daemon, 'get_image_downloader', lambda: called.append(1))
         try:
             tweet = {
                 'id': '43',
@@ -300,9 +328,9 @@ class TestAuthorizedRequest:
         import shutil
         import tempfile
 
-        out_dir = tempfile.mkdtemp(dir=os.path.expanduser('~'), prefix='.xtap-test-')
+        out_dir = tempfile.mkdtemp(dir=os.path.expanduser('~'), prefix='.xport-test-')
         called = []
-        monkeypatch.setattr(xtap_daemon, 'get_image_downloader', lambda: called.append(1))
+        monkeypatch.setattr(xport_daemon, 'get_image_downloader', lambda: called.append(1))
         try:
             tweet = {
                 'id': '44',
@@ -345,10 +373,10 @@ class TestConcurrency:
         from unittest.mock import patch
         import concurrent.futures
 
-        out_dir = tempfile.mkdtemp(dir=os.path.expanduser('~'), prefix='.xtap-test-')
+        out_dir = tempfile.mkdtemp(dir=os.path.expanduser('~'), prefix='.xport-test-')
 
         slow_entered = threading.Event()
-        original_write_tweets = xtap_daemon.write_tweets
+        original_write_tweets = xport_daemon.write_tweets
 
         def slow_write_tweets(tweets, out_dir, seen_ids):
             slow_entered.set()
@@ -356,7 +384,7 @@ class TestConcurrency:
             return original_write_tweets(tweets, out_dir, seen_ids)
 
         try:
-            with patch.object(xtap_daemon, 'write_tweets', side_effect=slow_write_tweets):
+            with patch.object(xport_daemon, 'write_tweets', side_effect=slow_write_tweets):
                 with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
                     # Fire off the slow /tweets request
                     tweets_future = pool.submit(
@@ -394,8 +422,8 @@ class TestConcurrency:
         stop = threading.Event()
 
         # Seed initial state
-        with xtap_core._downloads_lock:
-            xtap_core._downloads[download_id] = {
+        with xport_core._downloads_lock:
+            xport_core._downloads[download_id] = {
                 'status': 'downloading',
                 'progress': 0,
                 'path': None,
@@ -404,7 +432,7 @@ class TestConcurrency:
 
         def reader():
             while not stop.is_set():
-                s = xtap_core.get_download_status(download_id)
+                s = xport_core.get_download_status(download_id)
                 if s['status'] == 'done' and s['path'] is None:
                     errors.append(f'Incoherent: status=done but path=None')
                 if s['status'] == 'error' and s['error'] is None:
@@ -412,11 +440,11 @@ class TestConcurrency:
 
         def writer():
             for i in range(200):
-                with xtap_core._downloads_lock:
-                    xtap_core._downloads[download_id].update(
+                with xport_core._downloads_lock:
+                    xport_core._downloads[download_id].update(
                         progress=i, status='done', path='/tmp/video.mp4')
-                with xtap_core._downloads_lock:
-                    xtap_core._downloads[download_id].update(
+                with xport_core._downloads_lock:
+                    xport_core._downloads[download_id].update(
                         progress=0, status='downloading', path=None, error=None)
             stop.set()
 
@@ -432,7 +460,7 @@ class TestConcurrency:
             r.join(timeout=2)
 
         # Clean up
-        with xtap_core._downloads_lock:
-            del xtap_core._downloads[download_id]
+        with xport_core._downloads_lock:
+            del xport_core._downloads[download_id]
 
         assert not errors, f'Found incoherent reads: {errors[:5]}'

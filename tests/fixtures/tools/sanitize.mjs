@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Deterministic anonymization tool for xTap raw GraphQL captures.
+ * Deterministic anonymization tool for XPort raw GraphQL captures.
  *
  * Usage:
  *   node tests/fixtures/tools/sanitize.mjs <raw-capture.json> [scenario-name]
@@ -43,7 +43,7 @@ import { extractTweets } from '../../../lib/tweet-parser.js';
 // Deterministic hashing
 // ---------------------------------------------------------------------------
 
-const SEED = 'xtap-fixture-seed-v1';
+const SEED = 'xport-fixture-seed-v1';
 
 function hashHex(input) {
   return createHash('sha256').update(SEED + ':' + input).digest('hex');
@@ -536,7 +536,7 @@ function main() {
 ## Scenario
 
 Basic timeline capture from a \`${endpoint}\` response exercising the core
-xTap tweet parsing pipeline.
+XPort tweet parsing pipeline.
 
 ## What it covers
 

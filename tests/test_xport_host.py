@@ -1,4 +1,4 @@
-"""Tests for native-host/xtap_host.py — message framing and startup."""
+"""Tests for native-host/xport_host.py — message framing and startup."""
 
 import io
 import json
@@ -9,7 +9,7 @@ import sys
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'native-host'))
-import xtap_host
+import xport_host
 
 
 # ---------------------------------------------------------------------------
@@ -50,21 +50,21 @@ class TestReadMessage:
         raw = _encode_native_message(msg)
         chunked = ChunkedReader(raw, chunk_size=3)
         monkeypatch.setattr('sys.stdin', type('', (), {'buffer': chunked})())
-        assert xtap_host.read_message() == msg
+        assert xport_host.read_message() == msg
 
     def test_invalid_json_raises_value_error(self, monkeypatch):
         payload = b'not json at all'
         raw = struct.pack('<I', len(payload)) + payload
         monkeypatch.setattr('sys.stdin', type('', (), {'buffer': io.BytesIO(raw)})())
         with pytest.raises(json.JSONDecodeError):
-            xtap_host.read_message()
+            xport_host.read_message()
 
     def test_eof_mid_payload_raises_eoferror(self, monkeypatch):
         # Header claims 100 bytes but only 5 are available
         raw = struct.pack('<I', 100) + b'short'
         monkeypatch.setattr('sys.stdin', type('', (), {'buffer': io.BytesIO(raw)})())
         with pytest.raises(EOFError):
-            xtap_host.read_message()
+            xport_host.read_message()
 
 
 # ---------------------------------------------------------------------------
@@ -74,14 +74,14 @@ class TestReadMessage:
 class TestGetTokenWithoutStorage:
 
     def test_get_token_returns_secret(self, monkeypatch, tmp_path):
-        """GET_TOKEN should read ~/.xtap/secret and return it."""
+        """GET_TOKEN should read ~/.xport/secret and return it."""
         # Create a secret file
-        xtap_dir = tmp_path / '.xtap'
-        xtap_dir.mkdir()
-        secret_file = xtap_dir / 'secret'
+        xport_dir = tmp_path / '.xport'
+        xport_dir.mkdir()
+        secret_file = xport_dir / 'secret'
         secret_file.write_text('test-token-abc')
-        monkeypatch.setattr(xtap_host, 'XTAP_SECRET', str(secret_file))
-        monkeypatch.setattr(xtap_host, 'XTAP_DIR', str(xtap_dir))
+        monkeypatch.setattr(xport_host, 'XPORT_SECRET', str(secret_file))
+        monkeypatch.setattr(xport_host, 'XPORT_DIR', str(xport_dir))
 
         # Build a stdin stream: one GET_TOKEN message, then EOF
         raw = _encode_native_message({'type': 'GET_TOKEN'})
@@ -91,7 +91,7 @@ class TestGetTokenWithoutStorage:
         out_buf = io.BytesIO()
         monkeypatch.setattr('sys.stdout', type('', (), {'buffer': out_buf})())
 
-        xtap_host.main()
+        xport_host.main()
 
         # Parse the response
         out_buf.seek(0)
@@ -103,9 +103,9 @@ class TestGetTokenWithoutStorage:
 
     def test_unsupported_message_returns_error(self, monkeypatch, tmp_path):
         """Non-GET_TOKEN messages should return an error."""
-        xtap_dir = tmp_path / '.xtap'
-        xtap_dir.mkdir()
-        monkeypatch.setattr(xtap_host, 'XTAP_DIR', str(xtap_dir))
+        xport_dir = tmp_path / '.xport'
+        xport_dir.mkdir()
+        monkeypatch.setattr(xport_host, 'XPORT_DIR', str(xport_dir))
 
         raw = _encode_native_message({'type': 'TWEETS', 'tweets': []})
         monkeypatch.setattr('sys.stdin', type('', (), {'buffer': io.BytesIO(raw)})())
@@ -113,7 +113,7 @@ class TestGetTokenWithoutStorage:
         out_buf = io.BytesIO()
         monkeypatch.setattr('sys.stdout', type('', (), {'buffer': out_buf})())
 
-        xtap_host.main()
+        xport_host.main()
 
         out_buf.seek(0)
         resp_len = struct.unpack('<I', out_buf.read(4))[0]
@@ -123,10 +123,10 @@ class TestGetTokenWithoutStorage:
 
     def test_missing_secret_returns_error(self, monkeypatch, tmp_path):
         """GET_TOKEN when secret file is missing should return a clear error."""
-        xtap_dir = tmp_path / '.xtap'
-        xtap_dir.mkdir()
-        monkeypatch.setattr(xtap_host, 'XTAP_SECRET', str(xtap_dir / 'nonexistent'))
-        monkeypatch.setattr(xtap_host, 'XTAP_DIR', str(xtap_dir))
+        xport_dir = tmp_path / '.xport'
+        xport_dir.mkdir()
+        monkeypatch.setattr(xport_host, 'XPORT_SECRET', str(xport_dir / 'nonexistent'))
+        monkeypatch.setattr(xport_host, 'XPORT_DIR', str(xport_dir))
 
         raw = _encode_native_message({'type': 'GET_TOKEN'})
         monkeypatch.setattr('sys.stdin', type('', (), {'buffer': io.BytesIO(raw)})())
@@ -134,7 +134,7 @@ class TestGetTokenWithoutStorage:
         out_buf = io.BytesIO()
         monkeypatch.setattr('sys.stdout', type('', (), {'buffer': out_buf})())
 
-        xtap_host.main()
+        xport_host.main()
 
         out_buf.seek(0)
         resp_len = struct.unpack('<I', out_buf.read(4))[0]

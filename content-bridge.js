@@ -1,4 +1,4 @@
-// xTap — ISOLATED world bridge script
+// XPort — ISOLATED world bridge script
 // Listens for CustomEvents from the MAIN world content script and
 // forwards them to the service worker via chrome.runtime.sendMessage().
 (function () {

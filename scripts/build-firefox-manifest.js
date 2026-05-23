@@ -18,7 +18,7 @@ manifest.background.scripts = ['background.js'];
 // Gecko-specific metadata
 manifest.browser_specific_settings = {
   gecko: {
-    id: 'xtap@mkubicek.dev',
+    id: 'xport@sethrose.dev',
     strict_min_version: '128.0'
   }
 };

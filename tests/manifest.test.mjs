@@ -26,7 +26,7 @@ test('Firefox manifest uses background scripts instead of service_worker', () =>
 test('Firefox manifest declares Gecko metadata', () => {
   const gecko = firefox.browser_specific_settings?.gecko;
   assert.ok(gecko);
-  assert.equal(gecko.id, 'xtap@mkubicek.dev');
+  assert.equal(gecko.id, 'xport@sethrose.dev');
   assert.equal(gecko.strict_min_version, '128.0');
 });
 

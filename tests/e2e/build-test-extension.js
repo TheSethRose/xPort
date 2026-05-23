@@ -2,7 +2,7 @@
 /**
  * build-test-extension.js
  *
- * Copies the real xTap extension into a test-specific output directory and
+ * Copies the real XPort extension into a test-specific output directory and
  * injects a deterministic "key" field into manifest.json so that Chrome
  * always assigns the same stable extension ID when loading it unpacked.
  *
