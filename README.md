@@ -33,6 +33,7 @@ XPort is a browser extension, local daemon, and hosted ingestion API for capturi
 - **Zero footprint** — no additional network requests; captures what your browser already receives
 - **Structured output** — each tweet saved as a clean JSON object with author, metrics, media, and more
 - **PostgreSQL sync** — optionally forward captured batches to the hosted XPort API for durable SQL storage
+- **Read-only XPort skill** — query stored captures through `skill/xport` from the hosted API or PostgreSQL without touching X/Twitter
 - **Article support** — long-form X articles are captured with full text, inline image references, and Draft.js block structure
 - **Video download** — download videos from tweets using yt-dlp (or direct MP4 fallback) via the extension popup. Requires the HTTP daemon. **Note:** unlike passive capture, video downloads make additional network requests to X and are not stealth.
 - **Image download** — opt-in toggle in the popup ("Download images automatically") fetches photos from `pbs.twimg.com` to `<output_dir>/media/<tweet_id>/<filename>` as you browse. Daemon-side; rate-limited; logs to `media-manifest.jsonl`. **Note:** also not stealth — adds requests to the Twitter CDN.
@@ -90,6 +91,14 @@ XPort is a browser extension, local daemon, and hosted ingestion API for capturi
 5. At startup, the extension retrieves the daemon's auth token via **native messaging** (`xport_host.py` over Chrome/Firefox native messaging). This is a one-time bootstrap — all data flows through HTTP
 6. When `XPORT_API_URL` and `XPORT_INGEST_TOKEN` are configured, the daemon forwards successful local batches to the hosted API while keeping JSONL as the local fallback
 
+### Supported capture endpoints
+
+The parser has known instruction paths for:
+
+`HomeTimeline`, `HomeLatestTimeline`, `UserTweets`, `UserTweetsAndReplies`, `UserMedia`, `UserLikes`, `UserArticlesTweets`, `UserHighlightsTweets`, `TweetDetail`, `SearchTimeline`, `ListLatestTweetsTimeline`, `Bookmarks`, `Likes`, `CommunityTweetsTimeline`, `BookmarkFolderTimeline`
+
+`TweetResultByRestId` is also handled as a single-tweet response. Unknown endpoints fall back to a recursive search for `instructions[]` arrays, while known non-tweet GraphQL endpoints are ignored in the service worker.
+
 ## Is This Safe to Use?
 
 X is [rolling out stricter detection for automation and bots](https://x.com/nikitabier/status/2022496540275937525). The key line: *"If a human is not tapping on the screen, the account and all associated accounts will likely be suspended."*
@@ -115,159 +124,196 @@ These measures don't make detection impossible — a determined page script coul
 
 ## Installation
 
+Most users only need the local setup:
+
+1. Load the extension from `extension/`.
+2. Run the native-host installer.
+3. Open X and browse normally.
+
+By default, XPort writes JSONL files to `~/Downloads/xport`. Hosted PostgreSQL sync and the `skill/xport` CLI are optional.
+
 ### Requirements
 
-| | Requirement |
-|---|---|
-| **Browser** | Google Chrome or Mozilla Firefox (128+) |
-| **Runtime** | Python 3 |
-| **OS** | macOS, Linux, or Windows |
-| [`yt-dlp`](https://github.com/yt-dlp/yt-dlp#installation) (optional) | For best-quality video downloads |
+- Google Chrome or Firefox 128+
+- Python 3
+- macOS, Linux, or Windows
+- Optional: [`yt-dlp`](https://github.com/yt-dlp/yt-dlp#installation) for best-quality video downloads
 
-### 1. Load the extension
+### Chrome quick start
 
-**Chrome:**
+Clone the repo:
+
+```bash
+git clone https://github.com/TheSethRose/xPort.git
+cd xPort
+```
+
+If you already have the repo, start from your existing checkout.
+
+Load the extension:
+
 1. Open `chrome://extensions`
 2. Enable **Developer mode** (top right)
-3. Click **Load unpacked** and select the repo's `extension/` directory
-4. Copy the extension ID shown on the card (used by native host install)
+3. Click **Load unpacked**
+4. Select this repo's `extension/` directory
+5. Copy the extension ID shown on the extension card
 
-**Firefox (128+):**
-1. Create a Firefox copy of the repo's `extension/` directory (so your Chrome manifest stays unchanged)
-2. In that copy, replace `manifest.json` with `manifest.firefox.json` (rename it to `manifest.json`)
-3. Open `about:debugging#/runtime/this-firefox`
-4. Click **Load Temporary Add-on...**
-5. Select the Firefox copy's `manifest.json`
+Install the native host and local daemon:
 
-Firefox uses the fixed extension ID from `manifest.firefox.json`: `xport@sethrose.dev`.
-
-Thanks to [Vincent Koc](https://github.com/vincentkoc) for the Firefox support contribution.
-
-### 2. Install the native host
-
-<details>
-<summary><strong>macOS</strong></summary>
+**macOS / Linux**
 
 ```bash
 cd native-host
-./install.sh <your-extension-id> chrome
+./install.sh <chrome-extension-id> chrome
 ```
 
-For Firefox:
-```bash
-cd native-host
-./install.sh firefox
-```
-
-This installs the native messaging host (for auth token bootstrap) and an HTTP daemon (`xport_daemon.py`) that runs via launchd. The daemon runs independently of the browser process tree and has its own TCC permissions, so it can write to protected paths like `~/Documents` and iCloud Drive. The installer captures your current `PATH` so the daemon can find tools like `yt-dlp`.
-
-The extension automatically detects the daemon via the native host's auth token. If the daemon is not running, the extension will show a red "!" badge and an error in the popup.
-
-</details>
-
-<details>
-<summary><strong>Linux</strong></summary>
-
-```bash
-cd native-host
-./install.sh <your-extension-id> chrome
-```
-
-For Firefox:
-```bash
-cd native-host
-./install.sh firefox
-```
-
-This installs the native messaging host and an HTTP daemon (`xport_daemon.py`) that runs as a systemd user service. The daemon enables video downloads and provides the same HTTP transport as macOS.
-
-</details>
-
-<details>
-<summary><strong>Windows (PowerShell)</strong></summary>
+**Windows PowerShell**
 
 ```powershell
 cd native-host
-.\install.ps1 -ExtensionId <your-extension-id> -Browser chrome
+.\install.ps1 -ExtensionId <chrome-extension-id> -Browser chrome
 ```
 
-For Firefox:
+Verify the daemon:
+
+```bash
+curl http://127.0.0.1:17381/status
+```
+
+Expected response:
+
+```json
+{"ok":true,"version":"0.23.1"}
+```
+
+Open [x.com](https://x.com) and browse normally. Click the XPort extension icon to see capture status, pause/resume capture, choose an output directory, or open the debug dashboard.
+
+### Firefox setup
+
+Firefox uses a different MV3 background format, so load a Firefox copy of the extension:
+
+```bash
+git clone https://github.com/TheSethRose/xPort.git
+cd xPort
+cp -R extension /tmp/xport-firefox-extension
+cp /tmp/xport-firefox-extension/manifest.firefox.json /tmp/xport-firefox-extension/manifest.json
+```
+
+On Windows, make a copy of the `extension/` folder and replace that copy's `manifest.json` with the contents of `manifest.firefox.json`.
+
+Then:
+
+1. Open `about:debugging#/runtime/this-firefox`
+2. Click **Load Temporary Add-on...**
+3. Select `/tmp/xport-firefox-extension/manifest.json`
+
+Install the native host:
+
+**macOS / Linux**
+
+```bash
+cd native-host
+./install.sh firefox
+```
+
+**Windows PowerShell**
+
 ```powershell
 cd native-host
 .\install.ps1 -Browser firefox
 ```
 
-This installs the native messaging host and an HTTP daemon (`xport_daemon.py`) as a Windows Scheduled Task that starts at logon. The daemon enables video downloads and provides the same HTTP transport as macOS/Linux.
+Firefox uses the fixed extension ID from `manifest.firefox.json`: `xport@sethrose.dev`.
 
-</details>
+Thanks to [Vincent Koc](https://github.com/vincentkoc) for the Firefox support contribution.
 
-### 3. Browse X
+### What the installer does
 
-Open [x.com](https://x.com) and browse normally. The badge counter on the extension icon shows how many tweets have been captured this session. Click the icon to see stats and pause/resume capture.
+The installer creates:
 
-> **After updating the extension:** Reload XPort in your extension manager (`chrome://extensions` or `about:debugging#/runtime/this-firefox`), then hard-reload any open X tabs (`Cmd+Shift+R` / `Ctrl+Shift+R`). The content scripts that intercept API responses are injected at page load, so stale scripts from before the update won't connect to the new service worker.
+- A native messaging host for token bootstrap (`xport_host.py`)
+- A local HTTP daemon on `127.0.0.1:17381` (`xport_daemon.py`)
+- A secret token at `~/.xport/secret`
+- A default output directory at `~/Downloads/xport`
 
-### Upgrading from a previous version
+The daemon is installed as:
 
-After updating the extension files:
-1. Re-run the installer (`install.sh` on macOS/Linux, `install.ps1` on Windows) — this updates the daemon configuration and picks up new Python code
-2. Reload the extension in your browser extension manager
-3. Hard-reload any open X tabs (`Cmd+Shift+R` / `Ctrl+Shift+R`)
+- macOS: launchd service
+- Linux: systemd user service
+- Windows: Scheduled Task
 
-**From versions before v0.20.0 on macOS/Linux:** Re-running `install.sh` is **required** — the native messaging manifest now points to a wrapper script (`~/.xport/xport_host_wrapper.sh`) that uses an absolute Python path, fixing native host launch failures on macOS where Chrome's minimal environment couldn't find `python3`.
+The browser extension only uses native messaging to fetch the daemon token. Tweet batches, logs, path checks, image downloads, and video downloads all go through the local HTTP daemon.
 
-**From versions before v0.19.0:** The native messaging host (`xport_host.py`) no longer handles tweet writing — all data now flows through the HTTP daemon exclusively. Re-running `install.sh` is required to update the daemon's service configuration (adds `XPORT_LOG_LEVEL` support). The extension will show a red "!" badge if the daemon is not running, instead of silently falling back to native messaging.
+### Updating an existing install
 
-**From versions before v0.13.0 on macOS:** Re-running `install.sh` is **required** for video download support — the daemon needs an updated launchd configuration to find yt-dlp on your PATH.
+After pulling new code:
+
+1. Re-run the installer (`install.sh` on macOS/Linux, `install.ps1` on Windows)
+2. Reload XPort in your browser extension manager
+3. Hard-reload open X tabs (`Cmd+Shift+R` / `Ctrl+Shift+R`)
+
+The content scripts are injected when the page loads, so open X tabs keep old scripts until hard-reloaded.
+
+### Optional setup paths
+
+Local JSONL capture works without these.
+
+| Optional feature | Setup |
+|---|---|
+| Custom output directory | Set it in the popup, or set `XPORT_OUTPUT_DIR` before running the installer |
+| Debug logging | Use the debug dashboard toggle, or set `XPORT_LOG_LEVEL=debug` and re-run the installer |
+| Image download | Enable **Download images automatically** in the popup |
+| Video download | Install `yt-dlp`, then use the popup's video download button |
+| Hosted PostgreSQL sync | Set `XPORT_API_URL` and `XPORT_INGEST_TOKEN`, then re-run the installer |
+| Read-only skill CLI | Use `skill/xport` after captures exist in the hosted API or PostgreSQL |
+
+Detailed configuration is below.
 
 ### Troubleshooting
 
-If the extension shows "Not connected" or a red "!" badge:
+If the extension shows "Not connected" or a red `!` badge, check the daemon first:
 
-1. **Check if the daemon is running:**
-   ```bash
-   curl http://127.0.0.1:17381/status
-   # Should return: {"ok": true, "version": "..."}
-   ```
+```bash
+curl http://127.0.0.1:17381/status
+cat ~/.xport/daemon-stderr.log
+```
 
-2. **Check daemon logs:**
-   ```bash
-   cat ~/.xport/daemon-stderr.log
-   ```
-   The daemon logs startup diagnostics (Python version, output directory, token status) on every start. Common issues:
-   - `FATAL: ~/.xport/secret not found` — run `install.sh` first
-   - `FATAL: Cannot bind to 127.0.0.1:17381` — another instance is already running
-   - Import errors — check Python version (`python3 --version`, requires 3.x)
+Common daemon errors:
 
-3. **Check native host errors** (token bootstrap failures):
-   ```bash
-   cat ~/.xport/host-error.log
-   ```
-   This file is created when the native messaging host crashes. It includes the Python version, script path, and full traceback.
+- `FATAL: ~/.xport/secret not found`: run the installer
+- `FATAL: Cannot bind to 127.0.0.1:17381`: another daemon is already running
+- Import errors: check `python3 --version`
 
-4. **Enable debug logging** for detailed request-level daemon logs:
-   ```bash
-   export XPORT_LOG_LEVEL=debug
-   cd native-host && ./install.sh <extension-id> chrome
-   ```
-   Then check `~/.xport/daemon-stderr.log` for per-request details (method, path, duration, tweet counts).
+If token bootstrap fails, check native host errors:
 
-5. **Verify the native messaging manifest** points to the correct path:
-   ```bash
-   # Chrome (macOS):
-   cat ~/Library/Application\ Support/Google/Chrome/NativeMessagingHosts/com.xport.host.json
-   # Firefox (macOS):
-   cat ~/Library/Application\ Support/Mozilla/NativeMessagingHosts/com.xport.host.json
-   ```
-   The `path` field should point to `~/.xport/xport_host_wrapper.sh` (macOS/Linux) or `xport_host.bat` (Windows). The wrapper uses an absolute Python path so native messaging works even in Chrome's minimal environment. If it still points directly at `xport_host.py`, re-run `install.sh`.
+```bash
+cat ~/.xport/host-error.log
+```
+
+If Chrome or Firefox still points to an old native host path, re-run the installer. On macOS, the native messaging manifest should point to `~/.xport/xport_host_wrapper.sh`.
+
+Useful restart commands:
+
+```bash
+# macOS
+launchctl kickstart -k gui/$(id -u)/com.xport.daemon
+
+# Linux
+systemctl --user restart com.xport.daemon
+```
+
+```powershell
+# Windows PowerShell
+Stop-ScheduledTask -TaskName XPortDaemon; Start-ScheduledTask -TaskName XPortDaemon
+```
 
 ## Configuration
 
 ### Output directory
 
-The easiest way to change where tweets are saved is through the extension popup — click the XPort icon and enter your preferred path in the **Output directory** field.
+The easiest way to change where tweets are saved is through the extension popup: click the XPort icon and enter your preferred path in the **Output directory** field.
 
-Alternatively, set the `XPORT_OUTPUT_DIR` environment variable before launching your browser:
+Alternatively, set the `XPORT_OUTPUT_DIR` environment variable before running the installer or restarting the daemon:
 
 ```bash
 export XPORT_OUTPUT_DIR="$HOME/Documents/xport-data"
@@ -292,15 +338,17 @@ cd native-host
 ./install.sh <your-extension-id> chrome
 ```
 
-The installer writes those values into the launchd/systemd daemon config. Re-run it after changing the URL or token.
+Use `firefox` instead of `chrome` for Firefox. On Windows, set the same environment variables in PowerShell and run `install.ps1`. The installer writes those values into the daemon config. Re-run it after changing the URL or token.
 
 The hosted API uses:
 
 | Env var | Description |
 |---|---|
-| `DATABASE_URL` | PostgreSQL connection string |
-| `INGEST_TOKEN` | Bearer token required by hosted API read/write endpoints |
+| `HOST` | Bind host, defaults to `0.0.0.0` |
 | `PORT` | HTTP port, defaults to `8080` |
+| `MAX_BODY_SIZE` | Maximum request body size in bytes, defaults to 10 MB |
+| `DATABASE_URL` | PostgreSQL connection string |
+| `INGEST_TOKEN` or `XPORT_INGEST_TOKEN` | Bearer token required by hosted API read/write endpoints |
 
 API endpoints:
 
@@ -308,7 +356,7 @@ API endpoints:
 |---|---|---|
 | `GET /health` | None | DB-backed health check |
 | `POST /api/ingest/tweets` | Bearer token | Inserts/upserts tweets and records an ingest batch |
-| `GET /api/tweets` | Bearer token | Lists captured tweets with optional `q`, `author`, `since`, `until`, `endpoint`, `limit`, `offset`, and `include_raw` query params |
+| `GET /api/tweets` | Bearer token | Lists captured tweets with optional `q`, `author`, `since`, `until`, `endpoint`, `limit`, `offset`, and `include_raw` query params. `limit` is bounded to 1-500. |
 | `GET /api/tweets/<tweet_id>` | Bearer token | Returns one captured tweet, optionally with `include_raw=true` |
 | `GET /api/stats` | Bearer token | Summarizes stored tweet coverage |
 
@@ -321,9 +369,32 @@ skill/xport search "postgres" --api-url "$XPORT_API_URL" --token "$XPORT_API_TOK
 skill/xport recent --author handle --since 2026-05-01T00:00:00Z
 skill/xport get 1234567890 --include-raw
 skill/xport stats
+skill/xport search "postgres" --jsonl
 ```
 
-The CLI reads from the hosted API when `--api-url` or `XPORT_API_URL` is set. If no API URL is supplied, it reads PostgreSQL directly through `--database-url` or `DATABASE_URL`. It is read-only and never calls X/Twitter.
+The skill is named `xport` in `skill/SKILL.md`. Use it only for stored XPort captures. It must not call X/Twitter, scrape pages, hydrate profiles, fetch missing data, or create any new X/Twitter traffic.
+
+Command behavior:
+
+| Command | Purpose |
+|---|---|
+| `search [query]` | Search captured tweet text and raw JSON |
+| `recent` | List recent captured tweets |
+| `get <tweet_id>` | Fetch one stored tweet |
+| `stats` | Summarize stored tweet coverage |
+
+Useful filters: `--author`, `--since`, `--until`, `--endpoint`, `--limit`, `--offset`, `--include-raw`, and `--jsonl`.
+
+Environment fallbacks:
+
+| Variable | Purpose |
+|---|---|
+| `XPORT_API_URL` | Hosted XPort API base URL |
+| `XPORT_API_TOKEN` | Bearer token for read endpoints |
+| `XPORT_INGEST_TOKEN` or `INGEST_TOKEN` | Token fallback when no read-specific token exists |
+| `DATABASE_URL` | Direct PostgreSQL reads when no API URL is supplied |
+
+The CLI reads from the hosted API when `--api-url` or `XPORT_API_URL` is set. API mode uses only Python stdlib. If no API URL is supplied, it reads PostgreSQL directly through `--database-url` or `DATABASE_URL`; direct database mode requires `psycopg`.
 
 ## Output Format
 
@@ -412,6 +483,13 @@ XPort/
 ├── skill/
 │   ├── SKILL.md                 # Hermes/agentskills usage guide
 │   └── xport                    # Read-only XPort API/PostgreSQL CLI
+├── scripts/
+│   └── build-firefox-manifest.js # Regenerates the Firefox manifest from Chrome manifest
+├── tests/
+│   ├── fixtures/                 # Sanitized parser/e2e fixture packs
+│   ├── e2e/                      # Chromium + extension + daemon pipeline test
+│   ├── *.test.mjs                # Node tests for parser, manifest, staging, dedup
+│   └── test_*.py                 # Python tests for API, daemon, host, core, skill CLI
 ├── Dockerfile                  # Coolify/API container
 ├── requirements.txt            # API runtime dependencies
 └── native-host/
@@ -465,12 +543,19 @@ Get-Content ~\.xport\daemon-stderr.log -Tail 50 -Wait                           
 ## Testing
 
 ```bash
-uv run --with pytest --with 'psycopg[binary]==3.2.13' pytest tests/test_xport_api.py tests/test_xport_core.py tests/test_xport_daemon.py -q
-python3 -m pytest tests/ -v
+uv run --with pytest --with 'psycopg[binary]==3.2.13' pytest tests/ -v
 node --test tests/*.test.mjs
 ```
 
-CI runs these on every push to `main` with coverage uploaded to [Codecov](https://codecov.io/gh/TheSethRose/xPort).
+Focused checks:
+
+```bash
+node --test tests/parser-golden.test.mjs
+uv run --with pytest pytest tests/test_xport_skill_cli.py -v
+cd tests/e2e && npm ci && npm test
+```
+
+CI runs the Python and Node suites on every push and pull request to `main` with coverage uploaded to [Codecov](https://codecov.io/gh/TheSethRose/xPort). The E2E workflow separately runs the Chromium + extension + daemon golden-JSONL test.
 
 Parser fixture packs live under `tests/fixtures/`. Raw captures stay local in
 `tests/fixtures/private-raw/` (gitignored), while committed anonymized packs
