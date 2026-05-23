@@ -10,16 +10,16 @@ XPort is a browser extension (Chrome + Firefox), local daemon, and hosted ingest
 ## Architecture
 
 ```
-content-main.js (MAIN world)
+extension/content-main.js (MAIN world)
   │  Patches fetch() + XHR.open() to intercept GraphQL responses
   │  Emits CustomEvent with random per-page name
   ▼
-content-bridge.js (ISOLATED world)
+extension/content-bridge.js (ISOLATED world)
   │  Reads event name from <meta> tag, listens, relays
   │  Removes <meta> immediately after reading
   ▼
-background.js (Service Worker, ES module)
-  │  Parses tweet data via lib/tweet-parser.js
+extension/background.js (Service Worker, ES module)
+  │  Parses tweet data via extension/lib/tweet-parser.js
   │  Deduplicates (Set of seen IDs, max 50k; session storage in dev, local in prod)
   │  Batches (50 tweets or 30–45s jittered flush)
   │  Debug logging: intercepts console.log/warn/error, sends to host
@@ -48,8 +48,13 @@ media/<tweet_id>/*       (when image download enabled)
 media-manifest.jsonl     (when image download enabled — append-only download log)
 XPort API (optional, configured with XPORT_API_URL + XPORT_INGEST_TOKEN)
   │  POST /api/ingest/tweets
+  │  GET /api/tweets, /api/tweets/<tweet_id>, /api/stats
   ▼
 PostgreSQL tables: tweets, ingest_batches
+skill/xport (optional read-only CLI for Hermes/agentskills)
+  │  Reads from hosted API or DATABASE_URL
+  ▼
+Stored XPort captures only; no live X/Twitter requests
 ```
 
 ### Key Design Decisions
@@ -58,6 +63,7 @@ PostgreSQL tables: tweets, ingest_batches
 - **Random event channel:** The CustomEvent name is generated per page load (`'_' + Math.random().toString(36).slice(2)`) and passed via a `<meta>` tag that's immediately removed. Avoids predictable DOM markers.
 - **HTTP-only transport:** All data flows through the HTTP daemon (`xport_daemon.py`), managed by launchd (macOS), systemd (Linux), or Scheduled Task (Windows). On macOS, it runs outside browser TCC sandboxes, allowing writes to protected paths. If the daemon goes down, tweets are buffered in memory and the extension reprobes every 30 seconds until the daemon recovers.
 - **Hosted SQL sync:** When `XPORT_API_URL` and `XPORT_INGEST_TOKEN` are configured on the daemon, successful local tweet batches are forwarded to `POST /api/ingest/tweets`. Local JSONL remains the fallback source of truth if forwarding fails.
+- **Read-only stored capture access:** The hosted API exposes bearer-protected `GET /api/tweets`, `GET /api/tweets/<tweet_id>`, and `GET /api/stats` for stored captures. `skill/xport` wraps those endpoints for Hermes/agentskills and can fall back to direct `DATABASE_URL` reads.
 - **Token bootstrap via native messaging:** On first run, the extension connects to `xport_host.py` via native messaging to request `GET_TOKEN` (reads `~/.xport/secret`). The token is cached in `chrome.storage.local` for subsequent HTTP requests. The native host handles nothing else — all data goes through HTTP.
 - **Shared core logic:** `xport_core.py` contains all file I/O logic (load seen IDs, resolve output dir, write tweets/logs, test path), used by `xport_daemon.py`.
 - **Environment detection:** `isDevMode = !chrome.runtime.getManifest().update_url` — packed CWS extensions have `update_url`, unpacked don't. Used to switch seenIds storage between session (dev) and local (production).
@@ -94,18 +100,22 @@ The browser-side capture path stays passive. These carve-outs run on the daemon,
 
 ```
 XPort/
-├── manifest.json              # Chrome MV3 manifest (permissions: storage, nativeMessaging)
-├── manifest.firefox.json      # Firefox MV3 manifest (generated — do not edit)
-├── background.js              # Service worker (ES module) - transport, parsing, dedup
-├── content-main.js            # MAIN world - fetch/XHR patching
-├── content-bridge.js          # ISOLATED world - event relay
-├── popup.html/js/css          # Extension popup (stats, pause/resume, output dir)
-├── debug.html/js/css          # Debug dashboard (live events, transport health, debug/discovery toggles, parser sandbox)
-├── icons/                     # Extension icons (16, 48, 128)
-├── lib/
-│   └── tweet-parser.js        # GraphQL response → normalized tweet objects
+├── extension/                 # Load this directory in Chrome, never the repo root
+│   ├── manifest.json          # Chrome MV3 manifest (permissions: storage, nativeMessaging)
+│   ├── manifest.firefox.json  # Firefox MV3 manifest (generated — do not edit)
+│   ├── background.js          # Service worker (ES module) - transport, parsing, dedup
+│   ├── content-main.js        # MAIN world - fetch/XHR patching
+│   ├── content-bridge.js      # ISOLATED world - event relay
+│   ├── popup.html/js/css      # Extension popup (stats, pause/resume, output dir)
+│   ├── debug.html/js/css      # Debug dashboard (live events, transport health, debug/discovery toggles, parser sandbox)
+│   ├── icons/                 # Extension icons (16, 48, 128)
+│   └── lib/
+│       └── tweet-parser.js    # GraphQL response → normalized tweet objects
 ├── api/
 │   └── xport_api.py           # Hosted PostgreSQL ingestion API
+├── skill/
+│   ├── SKILL.md               # Hermes/agentskills usage guide
+│   └── xport                  # Read-only stored capture CLI
 ├── Dockerfile                 # API container for Coolify
 ├── requirements.txt           # API runtime dependencies
 └── native-host/
@@ -124,13 +134,13 @@ XPort/
 
 ## Supported Endpoints
 
-The tweet parser (`lib/tweet-parser.js`) has known instruction paths for:
+The tweet parser (`extension/lib/tweet-parser.js`) has known instruction paths for:
 
 `HomeTimeline`, `HomeLatestTimeline`, `UserTweets`, `UserTweetsAndReplies`, `UserMedia`, `UserLikes`, `TweetDetail`, `SearchTimeline`, `ListLatestTweetsTimeline`, `Bookmarks`, `Likes`, `CommunityTweetsTimeline`, `BookmarkFolderTimeline`
 
 `TweetResultByRestId` is also handled — it returns a single tweet (not a timeline) and is only processed when the tweet contains article data (long-form posts). This avoids duplicating tweets already captured from timeline endpoints.
 
-Unknown endpoints fall back to a recursive search for `instructions[]` arrays (max depth 5). Non-tweet endpoints are filtered in `background.js` via `IGNORED_ENDPOINTS`.
+Unknown endpoints fall back to a recursive search for `instructions[]` arrays (max depth 5). Non-tweet endpoints are filtered in `extension/background.js` via `IGNORED_ENDPOINTS`.
 
 ## Output Schema
 
@@ -200,20 +210,21 @@ X sometimes returns `TimelineTweet` entries where `tweet_results.result` is miss
 ## Development Notes
 
 - **No build step** — plain JS, no bundler, no transpilation. Load and go.
-- **Testing:** `uv run --with pytest --with 'psycopg[binary]==3.2.13' pytest tests/ -v && node --test tests/*.test.mjs`. Run after every change. CI runs these on every push to main with coverage uploaded to Codecov. For manual browser testing, load unpacked in Chrome (`chrome://extensions`) or as a temporary add-on in Firefox (`about:debugging#/runtime/this-firefox`) using `manifest.firefox.json`. Chrome extension IDs vary per install; Firefox uses the fixed Gecko ID in `manifest.firefox.json`. Use the matching installer mode (`install.sh ... chrome|firefox`, `install.ps1 -Browser chrome|firefox`).
+- **Testing:** `uv run --with pytest --with 'psycopg[binary]==3.2.13' pytest tests/ -v && node --test tests/*.test.mjs`. Run after every change. CI runs these on every push to main with coverage uploaded to Codecov. For manual browser testing, load unpacked in Chrome (`chrome://extensions`) from `extension/`, or as a temporary add-on in Firefox (`about:debugging#/runtime/this-firefox`) using `extension/manifest.firefox.json`. Chrome extension IDs vary per install; Firefox uses the fixed Gecko ID in `extension/manifest.firefox.json`. Use the matching installer mode (`install.sh ... chrome|firefox`, `install.ps1 -Browser chrome|firefox`).
 - **Parser golden test (fast, use for iteration):** `node --test tests/parser-golden.test.mjs` — runs `extractTweets` against all fixture scenarios in `tests/fixtures/sanitized/*/` and compares to golden `expected.jsonl`. Sub-second, reports field-level diffs on failure. Use this as the inner loop when modifying the parser.
 - **E2E test (slow, CI gate):** `cd tests/e2e && npm test` — launches Chromium + real extension + daemon + Fake X server. Auto-discovers all scenarios in `tests/fixtures/sanitized/`. Full pipeline integration proof.
 - **Fixtures:** Parser fixture packs live under `tests/fixtures/`. Keep raw captures in `tests/fixtures/private-raw/` only (gitignored) and commit only sanitized packs from `tests/fixtures/sanitized/`. The anonymization methodology and review checklist are documented in `tests/fixtures/FIXTURES.md`.
 - **Adding a fixture from a dump:** Discovery mode auto-dumps the first response per endpoint per session to the output dir as `dump-{endpoint}-{timestamp}.json` (in `{ endpoint, data }` envelope format). Feed directly to the sanitizer: `node tests/fixtures/tools/sanitize.mjs <dump-file> <scenario-name>`. This produces `tests/fixtures/sanitized/<scenario-name>/` with fixture.json, expected.jsonl, and manifest.json. Both parser and E2E tests pick it up automatically.
-- **Workflow for supporting a new endpoint:** (1) Human enables discovery mode and browses X normally — dumps appear automatically for every endpoint, (2) run `node tests/fixtures/tools/sanitize.mjs <dump-file> <scenario-name>`, (3) run `node --test tests/parser-golden.test.mjs` — if it fails, the parser doesn't handle this endpoint yet, (4) fix the parser in `lib/tweet-parser.js`, (5) re-run parser test until green (ms feedback loop), (6) regenerate expected: re-run sanitize.mjs (overwrites).
+- **Workflow for supporting a new endpoint:** (1) Human enables discovery mode and browses X normally — dumps appear automatically for every endpoint, (2) run `node tests/fixtures/tools/sanitize.mjs <dump-file> <scenario-name>`, (3) run `node --test tests/parser-golden.test.mjs` — if it fails, the parser doesn't handle this endpoint yet, (4) fix the parser in `extension/lib/tweet-parser.js`, (5) re-run parser test until green (ms feedback loop), (6) regenerate expected: re-run sanitize.mjs (overwrites).
 - **Debugging:** Enable "Debug logging to file" in the debug dashboard (popup → "Debug Dashboard"). Logs write to `debug-YYYY-MM-DD.log` in the output directory. Service worker console is visible in each browser's extension debugger. The debug dashboard also shows live capture events with accept/dedup/error status, transport health, and a parser sandbox for testing `extractTweets` against raw JSON.
 - **Dev mode seenIds:** In dev mode, `seenIds` uses `chrome.storage.session` when available (volatile — clears on extension reload). If session storage APIs are unavailable, it safely falls back to `chrome.storage.local`.
 - **tweet-parser.js** is the most fragile file — it handles multiple GraphQL response shapes and X changes their API schema without notice. The recursive fallback (`findInstructionsRecursive`) catches many new endpoint shapes automatically, but field-level changes to tweet objects will need manual updates to `normalizeTweet()`.
-- **Service worker module:** `background.js` is loaded as an ES module (`"type": "module"` in manifest). It imports `tweet-parser.js` directly.
+- **Service worker module:** `extension/background.js` is loaded as an ES module (`"type": "module"` in manifest). It imports `tweet-parser.js` directly.
 - **HTTP daemon:** `xport_daemon.py` binds `127.0.0.1:17381`. Auth token stored at `~/.xport/secret` (mode 600). Managed by launchd (macOS: `launchctl kickstart -k gui/$(id -u)/com.xport.daemon`), systemd (Linux: `systemctl --user restart com.xport.daemon`), or Scheduled Task (Windows: `Stop-ScheduledTask -TaskName XPortDaemon; Start-ScheduledTask -TaskName XPortDaemon`). Logs: macOS/Windows at `~/.xport/daemon-stderr.log`, Linux via `journalctl --user -u com.xport.daemon`.
 - **Transport debugging:** The popup shows connection status and auto-refreshes every 2s. When transport is unavailable, the popup and debug dashboard show an actionable error message. Service worker console logs transport selection at startup and reprobe attempts. Daemon startup diagnostics are always logged to `~/.xport/daemon-stderr.log`; set `XPORT_LOG_LEVEL=debug` for request-level detail.
-- **Release checklist:** (1) Bump `manifest.json` version, (2) bump `native-host/xport_daemon.py` `VERSION`, (3) run `node scripts/build-firefox-manifest.js` to regenerate `manifest.firefox.json`. The manifest test validates version parity, so CI will catch a forgotten regeneration. (4) If any new files were added to the extension or native-host, **update the file list in `.github/workflows/release.yml`** — the release zip uses an explicit list, not a glob, so new files will be silently missing from releases if not added. (5) Follow the **Release procedure** below to publish.
-- **Firefox manifest:** `manifest.firefox.json` is generated from `manifest.json` — never edit it directly. The generator script (`scripts/build-firefox-manifest.js`) swaps `service_worker` → `scripts` and adds Gecko metadata.
+- **XPort skill CLI:** `skill/xport` is read-only and must stay aligned with the hosted API and `tweets` table. It may read `XPORT_API_URL`/`XPORT_API_TOKEN`/`XPORT_INGEST_TOKEN` or `DATABASE_URL`, but it must never call X/Twitter or fetch missing data live.
+- **Release checklist:** (1) Bump `extension/manifest.json` version, (2) bump `native-host/xport_daemon.py` `VERSION`, (3) run `node scripts/build-firefox-manifest.js` to regenerate `extension/manifest.firefox.json`. The manifest test validates version parity, so CI will catch a forgotten regeneration. (4) If any new files were added to the extension or native-host, **update the file list in `.github/workflows/release.yml`** — the release zip uses an explicit list, not a glob, so new files will be silently missing from releases if not added. (5) Follow the **Release procedure** below to publish.
+- **Firefox manifest:** `extension/manifest.firefox.json` is generated from `extension/manifest.json` — never edit it directly. The generator script (`scripts/build-firefox-manifest.js`) swaps `service_worker` → `scripts` and adds Gecko metadata.
 
 ## Release Procedure
 

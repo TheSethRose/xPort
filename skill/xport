@@ -1,0 +1,242 @@
+#!/usr/bin/env python3
+"""Read captured XPort tweets from the hosted API or PostgreSQL."""
+
+import argparse
+import json
+import os
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+from datetime import datetime, timezone
+
+
+FIELDS = [
+    'tweet_id',
+    'author_id',
+    'author_username',
+    'author_name',
+    'text',
+    'conversation_id',
+    'created_at',
+    'captured_at',
+    'source_endpoint',
+    'url',
+    'lang',
+    'reply_count',
+    'repost_count',
+    'like_count',
+    'quote_count',
+    'bookmark_count',
+    'view_count',
+    'updated_at',
+]
+
+
+def main(argv=None):
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    try:
+        result = run(args)
+    except XPortError as e:
+        print(f'xport: {e}', file=sys.stderr)
+        return 1
+    write_output(result, jsonl=getattr(args, 'jsonl', False))
+    return 0
+
+
+def build_parser():
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument('--api-url', default=os.environ.get('XPORT_API_URL'), help='XPort API base URL')
+    common.add_argument(
+        '--token',
+        default=os.environ.get('XPORT_API_TOKEN') or os.environ.get('XPORT_INGEST_TOKEN') or os.environ.get('INGEST_TOKEN'),
+        help='Bearer token for XPort API reads',
+    )
+    common.add_argument('--database-url', default=os.environ.get('DATABASE_URL'), help='PostgreSQL DATABASE_URL for direct reads')
+    common.add_argument('--include-raw', action='store_true', help='Include raw tweet JSONB')
+    common.add_argument('--jsonl', action='store_true', help='Emit one JSON object per line')
+
+    parser = argparse.ArgumentParser(prog='xport', description='Read tweets captured by XPort.')
+    subparsers = parser.add_subparsers(dest='command', required=True)
+
+    search = subparsers.add_parser('search', parents=[common], help='Search captured tweets')
+    search.add_argument('query', nargs='?', help='Text to search in tweet text/raw JSON')
+    add_filters(search)
+
+    recent = subparsers.add_parser('recent', parents=[common], help='List recent captured tweets')
+    add_filters(recent)
+
+    get = subparsers.add_parser('get', parents=[common], help='Fetch one tweet by ID')
+    get.add_argument('tweet_id')
+
+    subparsers.add_parser('stats', parents=[common], help='Summarize stored tweet coverage')
+    return parser
+
+
+def add_filters(parser):
+    parser.add_argument('--author', help='Author username, with or without @')
+    parser.add_argument('--since', help='Lower bound for created_at/captured_at')
+    parser.add_argument('--until', help='Upper bound for created_at/captured_at')
+    parser.add_argument('--endpoint', help='Source GraphQL endpoint')
+    parser.add_argument('--limit', type=int, default=50)
+    parser.add_argument('--offset', type=int, default=0)
+
+
+def run(args):
+    if args.api_url:
+        return run_api(args)
+    if args.database_url:
+        return run_db(args)
+    raise XPortError('set --api-url or --database-url, or export XPORT_API_URL or DATABASE_URL')
+
+
+def run_api(args):
+    if not args.token:
+        raise XPortError('set --token or export XPORT_API_TOKEN/XPORT_INGEST_TOKEN')
+
+    if args.command == 'get':
+        payload = request_api(args.api_url, args.token, f'/api/tweets/{urllib.parse.quote(args.tweet_id, safe="")}', {
+            'include_raw': args.include_raw,
+        })
+        return payload.get('tweet')
+    if args.command == 'stats':
+        return request_api(args.api_url, args.token, '/api/stats', {}).get('stats')
+
+    params = {
+        'q': args.query if args.command == 'search' else None,
+        'author': args.author,
+        'since': args.since,
+        'until': args.until,
+        'endpoint': args.endpoint,
+        'limit': args.limit,
+        'offset': args.offset,
+        'include_raw': args.include_raw,
+    }
+    return request_api(args.api_url, args.token, '/api/tweets', params).get('tweets', [])
+
+
+def request_api(api_url, token, path, params):
+    clean_params = {k: v for k, v in params.items() if v not in (None, False, '')}
+    url = api_url.rstrip('/') + path
+    if clean_params:
+        url += '?' + urllib.parse.urlencode(clean_params)
+    req = urllib.request.Request(url, method='GET')
+    req.add_header('Authorization', f'Bearer {token}')
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            payload = json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        try:
+            payload = json.loads(e.read())
+            message = payload.get('error') or e.reason
+        except Exception:
+            message = e.reason
+        raise XPortError(f'API returned {e.code}: {message}') from e
+    except urllib.error.URLError as e:
+        raise XPortError(f'API request failed: {e.reason}') from e
+    if not payload.get('ok', True):
+        raise XPortError(payload.get('error') or 'API returned ok=false')
+    return payload
+
+
+def run_db(args):
+    try:
+        import psycopg
+        from psycopg.rows import dict_row
+    except ImportError as e:
+        raise XPortError('direct DB reads require psycopg; run with uv --with psycopg[binary] or use --api-url') from e
+
+    with psycopg.connect(args.database_url, row_factory=dict_row, connect_timeout=5) as conn:
+        if args.command == 'get':
+            row = conn.execute(
+                f"select {projection(args.include_raw)} from tweets where tweet_id = %s",
+                (args.tweet_id,),
+            ).fetchone()
+            if not row:
+                raise XPortError(f'tweet not found: {args.tweet_id}')
+            return json_ready(row)
+        if args.command == 'stats':
+            row = conn.execute(
+                """
+                select
+                  count(*) as tweet_count,
+                  min(created_at) as oldest_created_at,
+                  max(created_at) as newest_created_at,
+                  max(captured_at) as newest_captured_at,
+                  count(distinct author_username) as author_count
+                from tweets
+                """
+            ).fetchone()
+            return json_ready(row)
+        rows = conn.execute(*build_tweet_query(args)).fetchall()
+        return [json_ready(row) for row in rows]
+
+
+def build_tweet_query(args):
+    clauses = []
+    params = []
+    if args.command == 'search' and args.query:
+        clauses.append('(text ilike %s or raw::text ilike %s)')
+        needle = f'%{args.query}%'
+        params.extend([needle, needle])
+    if args.author:
+        clauses.append('lower(author_username) = lower(%s)')
+        params.append(args.author.lstrip('@'))
+    if args.since:
+        clauses.append('coalesce(created_at, captured_at) >= %s')
+        params.append(args.since)
+    if args.until:
+        clauses.append('coalesce(created_at, captured_at) <= %s')
+        params.append(args.until)
+    if args.endpoint:
+        clauses.append('source_endpoint = %s')
+        params.append(args.endpoint)
+
+    where = f"where {' and '.join(clauses)}" if clauses else ''
+    sql = f"""
+        select {projection(args.include_raw)}
+        from tweets
+        {where}
+        order by coalesce(created_at, captured_at) desc, captured_at desc
+        limit %s offset %s
+    """
+    params.extend([bounded(args.limit, 1, 500), bounded(args.offset, 0, 100000)])
+    return sql, params
+
+
+def projection(include_raw):
+    fields = list(FIELDS)
+    if include_raw:
+        fields.append('raw')
+    return ', '.join(fields)
+
+
+def bounded(value, minimum, maximum):
+    return min(max(value, minimum), maximum)
+
+
+def json_ready(value):
+    if isinstance(value, dict):
+        return {key: json_ready(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [json_ready(item) for item in value]
+    if isinstance(value, datetime):
+        return value.astimezone(timezone.utc).isoformat().replace('+00:00', 'Z')
+    return value
+
+
+def write_output(result, jsonl=False):
+    if jsonl and isinstance(result, list):
+        for item in result:
+            print(json.dumps(item, ensure_ascii=False, separators=(',', ':')))
+        return
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+
+
+class XPortError(Exception):
+    pass
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

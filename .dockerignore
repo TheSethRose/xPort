@@ -9,7 +9,13 @@ coverage-*
 
 tests
 native-host
-icons
+extension
+scripts
+.github
+AGENTS.md
+README.md
+LICENSE
+NOTICE
 *.crx
 *.pem
 tweets*.jsonl

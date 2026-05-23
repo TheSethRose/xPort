@@ -8,6 +8,7 @@ import signal
 import sys
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, unquote, urlparse
 from uuid import uuid4
 
 import psycopg
@@ -223,32 +224,195 @@ def ingest_tweets(payload):
     return {'ok': True, 'batch_id': batch_id, 'received': len(tweets), 'upserted': len(rows)}
 
 
+def _bool_param(value):
+    return str(value or '').lower() in {'1', 'true', 'yes', 'on'}
+
+
+def _bounded_int(value, default, minimum=0, maximum=500):
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return min(max(parsed, minimum), maximum)
+
+
+def _tweet_projection(include_raw):
+    fields = [
+        'tweet_id',
+        'author_id',
+        'author_username',
+        'author_name',
+        'text',
+        'conversation_id',
+        'created_at',
+        'captured_at',
+        'source_endpoint',
+        'url',
+        'lang',
+        'reply_count',
+        'repost_count',
+        'like_count',
+        'quote_count',
+        'bookmark_count',
+        'view_count',
+        'updated_at',
+    ]
+    if include_raw:
+        fields.append('raw')
+    return ', '.join(fields)
+
+
+def _row_to_json(row):
+    out = dict(row)
+    for key, value in list(out.items()):
+        if isinstance(value, datetime):
+            out[key] = value.astimezone(timezone.utc).isoformat().replace('+00:00', 'Z')
+    return out
+
+
+def list_tweets(query=None, author=None, since=None, until=None, endpoint=None, limit=50, offset=0, include_raw=False):
+    clauses = []
+    params = []
+    if query:
+        clauses.append('(text ilike %s or raw::text ilike %s)')
+        needle = f'%{query}%'
+        params.extend([needle, needle])
+    if author:
+        clauses.append('lower(author_username) = lower(%s)')
+        params.append(author.lstrip('@'))
+    if since:
+        clauses.append('coalesce(created_at, captured_at) >= %s')
+        params.append(since)
+    if until:
+        clauses.append('coalesce(created_at, captured_at) <= %s')
+        params.append(until)
+    if endpoint:
+        clauses.append('source_endpoint = %s')
+        params.append(endpoint)
+
+    where = f"where {' and '.join(clauses)}" if clauses else ''
+    sql = f"""
+        select {_tweet_projection(include_raw)}
+        from tweets
+        {where}
+        order by coalesce(created_at, captured_at) desc, captured_at desc
+        limit %s offset %s
+    """
+    params.extend([limit, offset])
+    with connect() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [_row_to_json(row) for row in rows]
+
+
+def get_tweet(tweet_id, include_raw=False):
+    with connect() as conn:
+        row = conn.execute(
+            f"select {_tweet_projection(include_raw)} from tweets where tweet_id = %s",
+            (tweet_id,),
+        ).fetchone()
+    return _row_to_json(row) if row else None
+
+
+def tweet_stats():
+    with connect() as conn:
+        row = conn.execute(
+            """
+            select
+              count(*) as tweet_count,
+              min(created_at) as oldest_created_at,
+              max(created_at) as newest_created_at,
+              max(captured_at) as newest_captured_at,
+              count(distinct author_username) as author_count
+            from tweets
+            """
+        ).fetchone()
+    return _row_to_json(row)
+
+
 class ApiHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         print(f'{self.client_address[0]} - {fmt % args}', file=sys.stderr)
 
     def do_GET(self):
-        if self.path != '/health':
-            _json_response(self, 404, {'ok': False, 'error': 'Not found'})
-            return
-        try:
-            with connect() as conn:
-                conn.execute('select 1')
-            _json_response(self, 200, {'ok': True})
-        except Exception as e:
-            _json_response(self, 503, {'ok': False, 'error': str(e)})
-
-    def do_POST(self):
-        if self.path != '/api/ingest/tweets':
-            _json_response(self, 404, {'ok': False, 'error': 'Not found'})
+        parsed = urlparse(self.path)
+        if parsed.path == '/health':
+            try:
+                with connect() as conn:
+                    conn.execute('select 1')
+                _json_response(self, 200, {'ok': True})
+            except Exception as e:
+                _json_response(self, 503, {'ok': False, 'error': str(e)})
             return
 
+        if not self._authorize():
+            return
+
+        if parsed.path == '/api/tweets':
+            self._handle_list_tweets(parsed.query)
+            return
+        if parsed.path.startswith('/api/tweets/'):
+            tweet_id = unquote(parsed.path.removeprefix('/api/tweets/'))
+            self._handle_get_tweet(tweet_id, parsed.query)
+            return
+        if parsed.path == '/api/stats':
+            self._handle_stats()
+            return
+
+        _json_response(self, 404, {'ok': False, 'error': 'Not found'})
+
+    def _authorize(self):
         if not INGEST_TOKEN:
             _json_response(self, 500, {'ok': False, 'error': 'INGEST_TOKEN is not configured'})
-            return
+            return False
         auth = self.headers.get('Authorization', '')
         if not auth.startswith('Bearer ') or not hmac.compare_digest(auth[7:], INGEST_TOKEN):
             _json_response(self, 401, {'ok': False, 'error': 'Unauthorized'})
+            return False
+        return True
+
+    def _handle_list_tweets(self, raw_query):
+        params = parse_qs(raw_query, keep_blank_values=False)
+        value = lambda name: params.get(name, [None])[0]
+        try:
+            tweets = list_tweets(
+                query=value('q'),
+                author=value('author'),
+                since=value('since'),
+                until=value('until'),
+                endpoint=value('endpoint'),
+                limit=_bounded_int(value('limit'), 50, 1, 500),
+                offset=_bounded_int(value('offset'), 0, 0, 100000),
+                include_raw=_bool_param(value('include_raw')),
+            )
+            _json_response(self, 200, {'ok': True, 'tweets': tweets})
+        except Exception as e:
+            _json_response(self, 500, {'ok': False, 'error': str(e)})
+
+    def _handle_get_tweet(self, tweet_id, raw_query):
+        params = parse_qs(raw_query, keep_blank_values=False)
+        try:
+            tweet = get_tweet(tweet_id, include_raw=_bool_param(params.get('include_raw', [None])[0]))
+        except Exception as e:
+            _json_response(self, 500, {'ok': False, 'error': str(e)})
+            return
+        if not tweet:
+            _json_response(self, 404, {'ok': False, 'error': 'Tweet not found'})
+            return
+        _json_response(self, 200, {'ok': True, 'tweet': tweet})
+
+    def _handle_stats(self):
+        try:
+            _json_response(self, 200, {'ok': True, 'stats': tweet_stats()})
+        except Exception as e:
+            _json_response(self, 500, {'ok': False, 'error': str(e)})
+
+    def do_POST(self):
+        parsed = urlparse(self.path)
+        if parsed.path != '/api/ingest/tweets':
+            _json_response(self, 404, {'ok': False, 'error': 'Not found'})
+            return
+
+        if not self._authorize():
             return
 
         raw_length = self.headers.get('Content-Length')

@@ -2,7 +2,7 @@
  * Tests for issue #10: undefined dedup poisoning + XHR listener stacking.
  * Run with: node --test tests/dedup-xhr.test.mjs
  *
- * Bug 1 tests import the production dedupTweet() from lib/dedup.js.
+ * Bug 1 tests import the production dedupTweet() from extension/lib/dedup.js.
  * Bug 2 tests evaluate the production content-main.js IIFE via vm.runInNewContext
  * with mocked browser globals so the real patching code is exercised.
  */
@@ -11,7 +11,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
-import { dedupTweet } from '../lib/dedup.js';
+import { dedupTweet } from '../extension/lib/dedup.js';
 
 // ---------------------------------------------------------------------------
 // Bug 1: seenIds dedup with missing tweet IDs — tests production dedupTweet()

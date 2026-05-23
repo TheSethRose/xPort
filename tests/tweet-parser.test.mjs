@@ -1,5 +1,5 @@
 /**
- * Tests for lib/tweet-parser.js
+ * Tests for extension/lib/tweet-parser.js
  * Run with: node --test tests/tweet-parser.test.mjs
  */
 

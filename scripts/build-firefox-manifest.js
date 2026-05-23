@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Generates manifest.firefox.json from manifest.json.
+// Generates extension/manifest.firefox.json from extension/manifest.json.
 // Run as part of release to keep a single source of truth for version,
 // permissions, and content scripts.
 
@@ -29,4 +29,4 @@ fs.writeFileSync(
   JSON.stringify(manifest, null, 2) + '\n'
 );
 
-console.log('Generated manifest.firefox.json');
+console.log('Generated extension/manifest.firefox.json');

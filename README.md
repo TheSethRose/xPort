@@ -299,7 +299,7 @@ The hosted API uses:
 | Env var | Description |
 |---|---|
 | `DATABASE_URL` | PostgreSQL connection string |
-| `INGEST_TOKEN` | Bearer token required by `POST /api/ingest/tweets` |
+| `INGEST_TOKEN` | Bearer token required by hosted API read/write endpoints |
 | `PORT` | HTTP port, defaults to `8080` |
 
 API endpoints:
@@ -308,6 +308,22 @@ API endpoints:
 |---|---|---|
 | `GET /health` | None | DB-backed health check |
 | `POST /api/ingest/tweets` | Bearer token | Inserts/upserts tweets and records an ingest batch |
+| `GET /api/tweets` | Bearer token | Lists captured tweets with optional `q`, `author`, `since`, `until`, `endpoint`, `limit`, `offset`, and `include_raw` query params |
+| `GET /api/tweets/<tweet_id>` | Bearer token | Returns one captured tweet, optionally with `include_raw=true` |
+| `GET /api/stats` | Bearer token | Summarizes stored tweet coverage |
+
+### XPort skill CLI
+
+The `/skill` folder contains a Hermes/agentskills-compatible skill and a read-only CLI for querying stored captures:
+
+```bash
+skill/xport search "postgres" --api-url "$XPORT_API_URL" --token "$XPORT_API_TOKEN"
+skill/xport recent --author handle --since 2026-05-01T00:00:00Z
+skill/xport get 1234567890 --include-raw
+skill/xport stats
+```
+
+The CLI reads from the hosted API when `--api-url` or `XPORT_API_URL` is set. If no API URL is supplied, it reads PostgreSQL directly through `--database-url` or `DATABASE_URL`. It is read-only and never calls X/Twitter.
 
 ## Output Format
 
@@ -393,6 +409,9 @@ XPort/
 │   └── lib/                   # Shared utilities
 ├── api/
 │   └── xport_api.py            # Hosted PostgreSQL ingestion API
+├── skill/
+│   ├── SKILL.md                 # Hermes/agentskills usage guide
+│   └── xport                    # Read-only XPort API/PostgreSQL CLI
 ├── Dockerfile                  # Coolify/API container
 ├── requirements.txt            # API runtime dependencies
 └── native-host/
