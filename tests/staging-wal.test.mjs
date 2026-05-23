@@ -10,9 +10,9 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
-import { dedupTweet } from '../lib/dedup.js';
+import { dedupTweet } from '../extension/lib/dedup.js';
 
-const bgSource = readFileSync(new URL('../background.js', import.meta.url), 'utf8');
+const bgSource = readFileSync(new URL('../extension/background.js', import.meta.url), 'utf8');
 
 // Strip ESM imports and init block; expose internals via var (added to sandbox)
 const testSource = bgSource

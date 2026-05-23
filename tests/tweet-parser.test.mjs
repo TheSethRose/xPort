@@ -5,7 +5,7 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { extractTweets, normalizeTweet, extractMedia, extractArticle } from '../lib/tweet-parser.js';
+import { extractTweets, normalizeTweet, extractMedia, extractArticle } from '../extension/lib/tweet-parser.js';
 
 // ---------------------------------------------------------------------------
 // Fixture helpers

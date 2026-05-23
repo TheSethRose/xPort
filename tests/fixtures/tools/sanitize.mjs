@@ -37,7 +37,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const FIXTURES_ROOT = resolve(__dirname, '..');
 
 // Import the real tweet parser so we can generate expected output
-import { extractTweets } from '../../../lib/tweet-parser.js';
+import { extractTweets } from '../../../extension/lib/tweet-parser.js';
 
 // ---------------------------------------------------------------------------
 // Deterministic hashing

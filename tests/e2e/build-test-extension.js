@@ -21,12 +21,13 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..', '..');
+const EXTENSION_ROOT = join(REPO_ROOT, 'extension');
 
 // --- Configuration -----------------------------------------------------------
 
 const PEM_PATH = join(__dirname, 'certs', 'test-extension.pem');
 
-// Files/dirs that make up the real extension (relative to repo root)
+// Files/dirs that make up the real extension (relative to extension root)
 const EXTENSION_FILES = [
   'manifest.json',
   'background.js',
@@ -98,7 +99,7 @@ function main() {
   mkdirSync(outDir, { recursive: true });
 
   for (const entry of EXTENSION_FILES) {
-    const src = join(REPO_ROOT, entry);
+    const src = join(EXTENSION_ROOT, entry);
     const dst = join(outDir, entry);
     if (!existsSync(src)) {
       console.warn(`Warning: ${entry} not found, skipping`);

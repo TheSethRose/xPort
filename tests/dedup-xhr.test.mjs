@@ -140,7 +140,7 @@ describe('dedupTweet (image-backfill bypass)', () => {
 // ---------------------------------------------------------------------------
 
 const contentMainCode = readFileSync(
-  new URL('../content-main.js', import.meta.url), 'utf8'
+  new URL('../extension/content-main.js', import.meta.url), 'utf8'
 );
 
 /**

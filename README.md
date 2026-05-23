@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="icons/icon128.png" alt="XPort logo" width="96" />
+  <img src="extension/icons/icon128.png" alt="XPort logo" width="96" />
 </p>
 
 <h1 align="center">XPort</h1>
@@ -129,11 +129,11 @@ These measures don't make detection impossible — a determined page script coul
 **Chrome:**
 1. Open `chrome://extensions`
 2. Enable **Developer mode** (top right)
-3. Click **Load unpacked** and select the `xport/` directory
+3. Click **Load unpacked** and select the repo's `extension/` directory
 4. Copy the extension ID shown on the card (used by native host install)
 
 **Firefox (128+):**
-1. Create a Firefox copy of the extension directory (so your Chrome manifest stays unchanged)
+1. Create a Firefox copy of the repo's `extension/` directory (so your Chrome manifest stays unchanged)
 2. In that copy, replace `manifest.json` with `manifest.firefox.json` (rename it to `manifest.json`)
 3. Open `about:debugging#/runtime/this-firefox`
 4. Click **Load Temporary Add-on...**
@@ -381,15 +381,16 @@ Top-level photo `media[]` entries do **not** carry a `local_path` field — the 
 
 ```
 XPort/
-├── manifest.json              # Chrome MV3 extension manifest
-├── manifest.firefox.json      # Firefox MV3 extension manifest (generated — do not edit)
-├── background.js              # Service worker — parsing, dedup, transport
-├── content-main.js            # MAIN world — patches fetch/XHR, emits events
-├── content-bridge.js          # ISOLATED world — relays events to service worker
-├── popup.html/js/css          # Extension popup UI
-├── debug.html/js/css          # Debug dashboard (live events, transport health, parser sandbox)
-├── icons/                     # Extension icons
-├── lib/                       # Shared utilities
+├── extension/                 # Load this directory in Chrome, not the repo root
+│   ├── manifest.json          # Chrome MV3 extension manifest
+│   ├── manifest.firefox.json  # Firefox MV3 extension manifest (generated — do not edit)
+│   ├── background.js          # Service worker — parsing, dedup, transport
+│   ├── content-main.js        # MAIN world — patches fetch/XHR, emits events
+│   ├── content-bridge.js      # ISOLATED world — relays events to service worker
+│   ├── popup.html/js/css      # Extension popup UI
+│   ├── debug.html/js/css      # Debug dashboard (live events, transport health, parser sandbox)
+│   ├── icons/                 # Extension icons
+│   └── lib/                   # Shared utilities
 ├── api/
 │   └── xport_api.py            # Hosted PostgreSQL ingestion API
 ├── Dockerfile                  # Coolify/API container
@@ -410,7 +411,7 @@ XPort/
 
 ## Development
 
-After modifying extension files (`background.js`, `lib/`, `content-*.js`, `popup.*`), reload the extension in your browser (`chrome://extensions` or `about:debugging#/runtime/this-firefox`) and hard-reload any open X tabs.
+After modifying extension files (`extension/background.js`, `extension/lib/`, `extension/content-*.js`, `extension/popup.*`), reload the extension in your browser (`chrome://extensions` or `about:debugging#/runtime/this-firefox`) and hard-reload any open X tabs.
 
 **Debug dashboard:** Click "Debug Dashboard" in the popup to open a live view of capture events, transport health, and a parser sandbox for testing `extractTweets` against raw GraphQL JSON. Debug logging and discovery mode toggles are also here — enable debug logging to write timestamped service worker logs to `debug-YYYY-MM-DD.log`, or discovery mode to log endpoint response shapes to the console.
 

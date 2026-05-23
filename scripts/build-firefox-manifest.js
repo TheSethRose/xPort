@@ -9,7 +9,8 @@ import url from 'node:url';
 
 const __dirname = path.dirname(url.fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
-const manifest = JSON.parse(fs.readFileSync(path.join(root, 'manifest.json'), 'utf8'));
+const extensionRoot = path.join(root, 'extension');
+const manifest = JSON.parse(fs.readFileSync(path.join(extensionRoot, 'manifest.json'), 'utf8'));
 
 // Firefox MV3 uses background.scripts instead of service_worker
 delete manifest.background.service_worker;
@@ -24,7 +25,7 @@ manifest.browser_specific_settings = {
 };
 
 fs.writeFileSync(
-  path.join(root, 'manifest.firefox.json'),
+  path.join(extensionRoot, 'manifest.firefox.json'),
   JSON.stringify(manifest, null, 2) + '\n'
 );
 

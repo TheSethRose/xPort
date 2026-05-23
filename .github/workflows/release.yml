@@ -17,34 +17,34 @@ jobs:
       - name: Build extension zip
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          zip -r "xtap-${VERSION}.zip" \
-            manifest.json \
-            manifest.firefox.json \
-            background.js \
-            content-main.js \
-            content-bridge.js \
-            popup.html popup.js popup.css \
-            debug.html debug.js debug.css \
-            icons/ \
-            lib/ \
-            native-host/xtap_core.py \
-            native-host/xtap_host.py \
-            native-host/xtap_daemon.py \
-            native-host/com.xtap.host.json \
-            native-host/com.xtap.host.firefox.json \
-            native-host/com.xtap.daemon.plist \
-            native-host/com.xtap.daemon.service \
+          zip -r "xport-${VERSION}.zip" \
+            extension/manifest.json \
+            extension/manifest.firefox.json \
+            extension/background.js \
+            extension/content-main.js \
+            extension/content-bridge.js \
+            extension/popup.html extension/popup.js extension/popup.css \
+            extension/debug.html extension/debug.js extension/debug.css \
+            extension/icons/ \
+            extension/lib/ \
+            native-host/xport_core.py \
+            native-host/xport_host.py \
+            native-host/xport_daemon.py \
+            native-host/com.xport.host.json \
+            native-host/com.xport.host.firefox.json \
+            native-host/com.xport.daemon.plist \
+            native-host/com.xport.daemon.service \
             native-host/install.sh \
             native-host/install.ps1 \
-            native-host/xtap_host.bat \
-            native-host/xtap_daemon.bat
+            native-host/xport_host.bat \
+            native-host/xport_daemon.bat
 
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          ASSET="xtap-${VERSION}.zip#xTap ${VERSION} (extension + native host)"
+          ASSET="xport-${VERSION}.zip#XPort ${VERSION} (extension + native host)"
           # Create the release if it doesn't exist yet (auto-generated notes
           # from commits since the previous tag), otherwise just upload the
           # zip into the release that was pre-created with hand-written notes.

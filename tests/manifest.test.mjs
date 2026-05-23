@@ -7,8 +7,9 @@ import url from 'node:url';
 
 const __dirname = path.dirname(url.fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
-const chromeManifestPath = path.join(root, 'manifest.json');
-const firefoxManifestPath = path.join(root, 'manifest.firefox.json');
+const extensionRoot = path.join(root, 'extension');
+const chromeManifestPath = path.join(extensionRoot, 'manifest.json');
+const firefoxManifestPath = path.join(extensionRoot, 'manifest.firefox.json');
 
 // Regenerate to ensure it's up-to-date
 execFileSync('node', [path.join(root, 'scripts', 'build-firefox-manifest.js')]);

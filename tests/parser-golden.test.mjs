@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { extractTweets } from '../lib/tweet-parser.js';
+import { extractTweets } from '../extension/lib/tweet-parser.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SANITIZED_DIR = join(__dirname, 'fixtures', 'sanitized');
