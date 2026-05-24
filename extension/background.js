@@ -13,19 +13,14 @@ let captureEnabled = true;
 let buffer = [];
 let flushTimer = null;
 let seenIds = new Set();
-// Session-only set of tweet IDs already forwarded for image-backfill this SW
-// lifetime. Lets us re-enter the daemon once per duplicate-with-photos so
-// images skipped at original capture time get downloaded, without spamming
-// the daemon on every scroll/re-navigation. Cleared on SW restart by design
-// — the downloader's per-file os.path.exists is the source of truth.
-let imageCheckedIds = new Set();
+let mediaSeenIds = new Set();
 let sessionCount = 0;
 let allTimeCount = 0;
 let outputDir = '';
-let imageDownload = false;
 let debugLogging = false;
 let verboseLogging = false;
 let logBuffer = [];
+let lastIngestError = null;
 const isDevMode = !chrome.runtime.getManifest().update_url;
 const hasSessionStorage = !!chrome.storage.session;
 const traceStorage = chrome.storage.session || chrome.storage.local;
@@ -33,13 +28,14 @@ let stageSeq = 0;
 let _saveChain = Promise.resolve();
 let readyResolve;
 const ready = new Promise(r => { readyResolve = r; });
+let transportReadyResolve;
+const transportReady = new Promise(r => { transportReadyResolve = r; });
 const autoDumpedThisSession = new Set();
 
-// --- Recent tweets cache (for video download lookup) ---
+// --- Recent tweets cache (for on-demand media lookup) ---
 const MAX_RECENT_TWEETS = 1000;
 const recentTweets = new Map();
-// tweetId → downloadId for in-progress downloads (so popup can resume polling)
-const activeDownloads = new Map();
+const activeTranscriptions = new Map();
 
 // --- Transport state ---
 // 'http' | 'none'
@@ -56,7 +52,7 @@ function seenIdsStorage() {
 // Staging uses session whenever available (ephemeral — cleared on browser restart).
 // seenIdsStorage() uses session only in dev mode. In production, seenIds goes to
 // local for persistence while WAL entries stay in session (they only need to survive
-// SW suspension, not browser restart). Firefox without session falls back to local.
+// SW suspension, not browser restart). Older Chrome builds without session fall back to local.
 function stagingStorage() {
   return hasSessionStorage ? chrome.storage.session : chrome.storage.local;
 }
@@ -143,18 +139,19 @@ function saveState() {
 }
 
 async function _saveStateImpl() {
-  // seenIds and tweetBuffer are coupled in one write so a quota failure
-  // loses both rather than persisting seenIds without the buffer (which
+  // seenIds, mediaSeenIds, and tweetBuffer are coupled in one write so a quota failure
+  // loses all three rather than persisting seenIds without the buffer (which
   // would create ghost-dedup entries that permanently block those tweets).
   const seenArr = [...seenIds].slice(-MAX_SEEN_IDS);
+  const mediaSeenArr = [...mediaSeenIds].filter(id => seenIds.has(id)).slice(-MAX_SEEN_IDS);
   try {
     if (isDevMode && hasSessionStorage) {
       await Promise.all([
-        chrome.storage.session.set({ seenIds: seenArr, tweetBuffer: buffer }),
+        chrome.storage.session.set({ seenIds: seenArr, mediaSeenIds: mediaSeenArr, tweetBuffer: buffer }),
         chrome.storage.local.set({ allTimeCount, captureEnabled }),
       ]);
     } else {
-      await chrome.storage.local.set({ seenIds: seenArr, tweetBuffer: buffer, allTimeCount, captureEnabled });
+      await chrome.storage.local.set({ seenIds: seenArr, mediaSeenIds: mediaSeenArr, tweetBuffer: buffer, allTimeCount, captureEnabled });
     }
     return true;
   } catch (e) {
@@ -165,15 +162,15 @@ async function _saveStateImpl() {
 
 async function restoreState() {
   const [seenStored, stored] = await Promise.all([
-    seenIdsStorage().get(['seenIds', 'tweetBuffer']),
-    chrome.storage.local.get(['allTimeCount', 'captureEnabled', 'outputDir', 'imageDownload', 'debugLogging', 'verboseLogging']),
+    seenIdsStorage().get(['seenIds', 'mediaSeenIds', 'tweetBuffer']),
+    chrome.storage.local.get(['allTimeCount', 'captureEnabled', 'outputDir', 'debugLogging', 'verboseLogging']),
   ]);
   if (seenStored.seenIds) seenIds = new Set(seenStored.seenIds.filter(Boolean));
+  if (seenStored.mediaSeenIds) mediaSeenIds = new Set(seenStored.mediaSeenIds.filter(id => id && seenIds.has(id)));
   if (Array.isArray(seenStored.tweetBuffer)) buffer = seenStored.tweetBuffer;
   if (typeof stored.allTimeCount === 'number') allTimeCount = stored.allTimeCount;
   if (typeof stored.captureEnabled === 'boolean') captureEnabled = stored.captureEnabled;
   if (typeof stored.outputDir === 'string') outputDir = stored.outputDir;
-  if (typeof stored.imageDownload === 'boolean') imageDownload = stored.imageDownload;
   if (typeof stored.debugLogging === 'boolean') debugLogging = stored.debugLogging;
   if (typeof stored.verboseLogging === 'boolean') verboseLogging = stored.verboseLogging;
 }
@@ -218,7 +215,7 @@ async function httpFetch(method, path, body) {
   }
 }
 
-// AbortSignal.timeout may not exist in all MV3 runtimes (e.g. older Firefox)
+// AbortSignal.timeout may not exist in all MV3 runtimes.
 function makeTimeoutSignal(ms) {
   if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
     return AbortSignal.timeout(ms);
@@ -319,8 +316,10 @@ async function initTransport() {
 
 async function sendToHost(msg) {
   if (transport !== 'http') {
-    console.warn('[XPort] No transport available, message dropped');
-    return null;
+    if (!(await reprobeTransport())) {
+      console.warn('[XPort] No transport available, message dropped');
+      return null;
+    }
   }
 
   let path, body;
@@ -335,21 +334,27 @@ async function sendToHost(msg) {
     path = '/dump';
     body = { filename: msg.filename, content: msg.content };
     if (msg.outputDir) body.outputDir = msg.outputDir;
-  } else if (msg.type === 'CHECK_YTDLP') {
-    path = '/check-ytdlp';
-    body = {};
-  } else if (msg.type === 'DOWNLOAD_VIDEO') {
-    path = '/download-video';
-    body = { tweetUrl: msg.tweetUrl, directUrl: msg.directUrl, postDate: msg.postDate };
-    if (msg.outputDir) body.outputDir = msg.outputDir;
-  } else if (msg.type === 'DOWNLOAD_STATUS') {
-    path = '/download-status';
-    body = { downloadId: msg.downloadId };
+  } else if (msg.type === 'TRANSCRIBE_MEDIA') {
+    path = '/transcribe-media';
+    body = {
+      media_id: msg.mediaId,
+      tweet_id: msg.tweetId,
+      source_url: msg.sourceUrl,
+      duration_ms: msg.durationMs,
+    };
+  } else if (msg.type === 'TRANSCRIPTION_STATUS') {
+    path = '/transcription-status';
+    body = { media_id: msg.mediaId };
+  } else if (msg.type === 'GET_STORED_TWEETS') {
+    path = '/stored-tweets';
+    body = {
+      limit: msg.limit || 50,
+      offset: msg.offset || 0,
+    };
   } else {
     path = '/tweets';
     body = { tweets: msg.tweets };
     if (msg.outputDir) body.outputDir = msg.outputDir;
-    if (msg.imageDownload) body.image_download = true;
   }
 
   try {
@@ -437,20 +442,21 @@ async function flush() {
     const batch = buffer.splice(0);
     const message = { tweets: batch };
     if (outputDir) message.outputDir = outputDir;
-    if (imageDownload) message.imageDownload = true;
-
     try {
       const resp = await sendToHost(message);
       if (!resp || !resp.ok) {
-        console.error('[XPort] Host rejected tweets:', resp?.error || 'no response');
+        lastIngestError = resp?.error || 'no response';
+        console.error('[XPort] Host rejected tweets:', lastIngestError);
         buffer.unshift(...batch);
         await saveState();
       } else {
+        lastIngestError = null;
         await saveState();
       }
     } catch (e) {
       console.error('[XPort] Send failed, buffering tweets back:', e);
       buffer.unshift(...batch);
+      lastIngestError = e.message || String(e);
       await saveState();
     }
   }
@@ -482,7 +488,9 @@ function enqueueTweets(tweets, endpoint = 'unknown') {
   for (const tweet of tweets) {
     // Always cache for video lookup (even dupes — updates with latest data)
     if (tweet.id) {
-      recentTweets.set(tweet.id, tweet);
+      const cachedTweet = cloneTweetForRecentMedia(tweet);
+      ensureMediaIds(cachedTweet);
+      recentTweets.set(tweet.id, cachedTweet);
       // FIFO eviction
       if (recentTweets.size > MAX_RECENT_TWEETS) {
         const oldest = recentTweets.keys().next().value;
@@ -490,25 +498,21 @@ function enqueueTweets(tweets, endpoint = 'unknown') {
       }
     }
 
-    if (!dedupTweet(tweet, seenIds, { imageBackfill: imageDownload, imageCheckedIds })) {
-      emitTraceEvent({ timestamp: Date.now(), endpoint, tweetId: tweet.id, status: 'DEDUPLICATED', reason: 'seenIds' });
+    if (!dedupTweet(tweet, seenIds, mediaSeenIds)) {
+      emitTraceEvent({ timestamp: Date.now(), endpoint, tweetId: tweet.id, tweetLabel: traceTweetLabel(tweet), status: 'DEDUPLICATED', reason: 'seenIds' });
       continue;
     }
     buffer.push(tweet);
     newCount++;
-    emitTraceEvent({ timestamp: Date.now(), endpoint, tweetId: tweet.id, status: 'ACCEPTED', reason: null });
+    emitTraceEvent({ timestamp: Date.now(), endpoint, tweetId: tweet.id, tweetLabel: traceTweetLabel(tweet), status: 'ACCEPTED', reason: null });
   }
 
   // FIFO eviction if seenIds grows too large
   if (seenIds.size > MAX_SEEN_IDS) {
     const arr = [...seenIds];
     seenIds = new Set(arr.slice(arr.length - MAX_SEEN_IDS));
+    mediaSeenIds = new Set([...mediaSeenIds].filter(id => seenIds.has(id)).slice(-MAX_SEEN_IDS));
   }
-  if (imageCheckedIds.size > MAX_SEEN_IDS) {
-    const arr = [...imageCheckedIds];
-    imageCheckedIds = new Set(arr.slice(arr.length - MAX_SEEN_IDS));
-  }
-
   const dupeCount = tweets.length - newCount;
   if (dupeCount > 0) {
     console.log(`[XPort] Dedup: ${newCount} new, ${dupeCount} duplicates skipped (seenIds: ${seenIds.size})`);
@@ -524,6 +528,33 @@ function enqueueTweets(tweets, endpoint = 'unknown') {
     console.warn(`[XPort] Buffer overflow: dropped ${overflow} oldest tweets (cap: ${MAX_BUFFER_SIZE})`);
     emitTraceEvent({ timestamp: Date.now(), endpoint, tweetId: null, status: 'BUFFER_OVERFLOW', reason: `dropped ${overflow}` });
   }
+}
+
+function traceTweetLabel(tweet) {
+  if (!tweet || typeof tweet !== 'object') return null;
+  const author = tweet.author?.username ? `@${tweet.author.username}` : '';
+  const text = typeof tweet.text === 'string' ? tweet.text.replace(/\s+/g, ' ').trim() : '';
+  const preview = text.length > 80 ? `${text.slice(0, 77)}...` : text;
+  return [author, preview].filter(Boolean).join(': ') || null;
+}
+
+function cloneTweetForRecentMedia(tweet) {
+  if (!Array.isArray(tweet?.media)) return tweet;
+  return {
+    ...tweet,
+    media: tweet.media.map(item => (
+      item && typeof item === 'object' ? { ...item } : item
+    )),
+  };
+}
+
+function ensureMediaIds(tweet) {
+  if (!tweet?.id || !Array.isArray(tweet.media)) return;
+  tweet.media.forEach((item, index) => {
+    if (item && typeof item === 'object' && !item.media_id) {
+      item.media_id = `${tweet.id}:${index}`;
+    }
+  });
 }
 
 // --- Badge ---
@@ -673,6 +704,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === 'GET_STATUS') {
     (async () => {
       await ready;
+      await transportReady;
       sendResponse({
         captureEnabled,
         sessionCount,
@@ -680,13 +712,13 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         connected: transport !== 'none',
         buffered: buffer.length,
         outputDir,
-        imageDownload,
         debugLogging,
         verboseLogging,
         transport,
         transportError: transport === 'none'
           ? 'Daemon not running. Check ~/.xport/daemon-stderr.log'
           : null,
+        ingestError: lastIngestError,
         discoveredEndpoints: [...autoDumpedThisSession],
       });
     })();
@@ -737,13 +769,6 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return true;
   }
 
-  if (msg.type === 'SET_IMAGE_DOWNLOAD') {
-    imageDownload = !!msg.imageDownload;
-    chrome.storage.local.set({ imageDownload });
-    sendResponse({ imageDownload });
-    return true;
-  }
-
   if (msg.type === 'TOGGLE_CAPTURE') {
     captureEnabled = !captureEnabled;
     saveState();
@@ -762,22 +787,25 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       sendResponse({ hasVideo: false });
       return true;
     }
+    const mediaId = videoMedia.media_id || `${msg.tweetId}:${tweet.media.indexOf(videoMedia)}`;
+    const active = activeTranscriptions.get(mediaId);
     sendResponse({
       hasVideo: true,
+      mediaId,
       tweetUrl: tweet.url || `https://x.com/i/status/${msg.tweetId}`,
-      directUrl: videoMedia.url || null,
+      sourceUrl: videoMedia.url || null,
       mediaType: videoMedia.type,
       durationMs: videoMedia.duration_ms || null,
       postDate: tweet.created_at || null,
-      activeDownloadId: activeDownloads.get(msg.tweetId) || null,
+      transcriptStatus: active?.status || videoMedia.transcript_status || 'not_requested',
     });
     return true;
   }
 
-  if (msg.type === 'CHECK_YTDLP') {
+  if (msg.type === 'GET_STORED_TWEETS') {
     (async () => {
       try {
-        const resp = await sendToHost({ type: 'CHECK_YTDLP' });
+        const resp = await sendToHost({ type: 'GET_STORED_TWEETS', limit: msg.limit || 50, offset: msg.offset || 0 });
         sendResponse(resp || { ok: false, error: 'No transport' });
       } catch (e) {
         sendResponse({ ok: false, error: e.message });
@@ -786,19 +814,18 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return true;
   }
 
-  if (msg.type === 'DOWNLOAD_VIDEO') {
+  if (msg.type === 'TRANSCRIBE_MEDIA') {
     (async () => {
       try {
         const resp = await sendToHost({
-          type: 'DOWNLOAD_VIDEO',
-          tweetUrl: msg.tweetUrl,
-          directUrl: msg.directUrl,
-          postDate: msg.postDate,
-          outputDir: outputDir || undefined,
+          type: 'TRANSCRIBE_MEDIA',
+          mediaId: msg.mediaId,
+          tweetId: msg.tweetId,
+          sourceUrl: msg.sourceUrl,
+          durationMs: msg.durationMs,
         });
-        // Track active download so popup can resume polling after close/reopen
-        if (resp?.ok && resp.downloadId && msg.tweetId) {
-          activeDownloads.set(msg.tweetId, resp.downloadId);
+        if (resp?.ok && msg.mediaId) {
+          activeTranscriptions.set(msg.mediaId, { status: resp.status || 'queued' });
         }
         sendResponse(resp || { ok: false, error: 'No transport' });
       } catch (e) {
@@ -808,18 +835,12 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return true;
   }
 
-  if (msg.type === 'DOWNLOAD_STATUS') {
+  if (msg.type === 'TRANSCRIPTION_STATUS') {
     (async () => {
       try {
-        const resp = await sendToHost({
-          type: 'DOWNLOAD_STATUS',
-          downloadId: msg.downloadId,
-        });
-        // Clean up finished downloads from active map
-        if (resp?.status === 'done' || resp?.status === 'error') {
-          for (const [tid, did] of activeDownloads) {
-            if (did === msg.downloadId) { activeDownloads.delete(tid); break; }
-          }
+        const resp = await sendToHost({ type: 'TRANSCRIPTION_STATUS', mediaId: msg.mediaId });
+        if (resp?.ok && msg.mediaId && resp.status) {
+          activeTranscriptions.set(msg.mediaId, { status: resp.status, error: resp.error || null });
         }
         sendResponse(resp || { ok: false, error: 'No transport' });
       } catch (e) {
@@ -828,6 +849,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     })();
     return true;
   }
+
 });
 
 // --- Init ---
@@ -844,7 +866,12 @@ restoreState().catch((e) => {
   await recoverStagedPayloads();
   readyResolve();
   updateBadge();
-  await initTransport();
+  try {
+    await initTransport();
+  } finally {
+    transportReadyResolve();
+  }
+  updateBadge();
   function scheduleNextFlush() {
     const jitter = Math.random() * FLUSH_INTERVAL_MS * 0.5;
     flushTimer = setTimeout(() => { scheduledFlush(); scheduleNextFlush(); }, FLUSH_INTERVAL_MS + jitter);

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""XPort Native Messaging Host — token bootstrap for the Chrome/Firefox extension.
+"""XPort Native Messaging Host — token bootstrap for the Chrome extension.
 
 This minimal host exists solely to pass the HTTP daemon's auth token to the
 browser extension via native messaging.  All tweet/log/dump I/O goes through

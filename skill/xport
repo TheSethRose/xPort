@@ -2,6 +2,7 @@
 """Read captured XPort tweets from the hosted API or PostgreSQL."""
 
 import argparse
+import base64
 import json
 import os
 import sys
@@ -55,6 +56,7 @@ def build_parser():
     )
     common.add_argument('--database-url', default=os.environ.get('DATABASE_URL'), help='PostgreSQL DATABASE_URL for direct reads')
     common.add_argument('--include-raw', action='store_true', help='Include raw tweet JSONB')
+    common.add_argument('--include-media', action='store_true', help='Include captured media metadata')
     common.add_argument('--jsonl', action='store_true', help='Emit one JSON object per line')
 
     parser = argparse.ArgumentParser(prog='xport', description='Read tweets captured by XPort.')
@@ -69,6 +71,18 @@ def build_parser():
 
     get = subparsers.add_parser('get', parents=[common], help='Fetch one tweet by ID')
     get.add_argument('tweet_id')
+
+    media = subparsers.add_parser('media', parents=[common], help='List captured media for one tweet')
+    media.add_argument('tweet_id')
+
+    transcribe = subparsers.add_parser('transcribe', parents=[common], help='Queue on-demand video transcription through the local daemon')
+    transcribe.add_argument('media_id')
+    transcribe.add_argument('--daemon-url', default=os.environ.get('XPORT_DAEMON_URL', 'http://127.0.0.1:17381'))
+    transcribe.add_argument('--daemon-token', default=os.environ.get('XPORT_DAEMON_TOKEN'))
+
+    content = subparsers.add_parser('media-content', parents=[common], help='Read already-stored media content')
+    content.add_argument('media_id')
+    content.add_argument('--data-url', action='store_true', help='Return a data URL for stored image bytes')
 
     subparsers.add_parser('stats', parents=[common], help='Summarize stored tweet coverage')
     return parser
@@ -98,8 +112,19 @@ def run_api(args):
     if args.command == 'get':
         payload = request_api(args.api_url, args.token, f'/api/tweets/{urllib.parse.quote(args.tweet_id, safe="")}', {
             'include_raw': args.include_raw,
+            'include_media': args.include_media,
         })
         return payload.get('tweet')
+    if args.command == 'media':
+        return request_api(args.api_url, args.token, f'/api/tweets/{urllib.parse.quote(args.tweet_id, safe="")}/media', {}).get('media', [])
+    if args.command == 'media-content':
+        if not args.data_url:
+            raise XPortError('media-content currently requires --data-url')
+        return request_api(args.api_url, args.token, f'/api/media/{urllib.parse.quote(args.media_id, safe="")}/content', {
+            'data_url': True,
+        })
+    if args.command == 'transcribe':
+        return transcribe_api_media(args)
     if args.command == 'stats':
         return request_api(args.api_url, args.token, '/api/stats', {}).get('stats')
 
@@ -112,6 +137,7 @@ def run_api(args):
         'limit': args.limit,
         'offset': args.offset,
         'include_raw': args.include_raw,
+        'include_media': args.include_media,
     }
     return request_api(args.api_url, args.token, '/api/tweets', params).get('tweets', [])
 
@@ -140,6 +166,53 @@ def request_api(api_url, token, path, params):
     return payload
 
 
+def post_json(url, token, payload):
+    body = json.dumps(payload).encode('utf-8')
+    req = urllib.request.Request(url, data=body, method='POST')
+    req.add_header('Content-Type', 'application/json')
+    if token:
+        req.add_header('Authorization', f'Bearer {token}')
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            result = json.loads(resp.read() or b'{}')
+    except urllib.error.HTTPError as e:
+        try:
+            result = json.loads(e.read())
+            message = result.get('error') or e.reason
+        except Exception:
+            message = e.reason
+        raise XPortError(f'HTTP {e.code}: {message}') from e
+    except urllib.error.URLError as e:
+        raise XPortError(f'request failed: {e.reason}') from e
+    if result.get('ok') is not True:
+        raise XPortError(result.get('error') or 'request returned ok=false')
+    return result
+
+
+def transcribe_api_media(args):
+    media = request_api(args.api_url, args.token, f'/api/media/{urllib.parse.quote(args.media_id, safe="")}', {}).get('media')
+    if not media:
+        raise XPortError(f'media not found: {args.media_id}')
+    if media.get('media_type') not in {'video', 'animated_gif'}:
+        raise XPortError(f'media is not video: {args.media_id}')
+    token = args.daemon_token or read_daemon_token()
+    return post_json(args.daemon_url.rstrip('/') + '/transcribe-media', token, {
+        'media_id': media['media_id'],
+        'tweet_id': media['tweet_id'],
+        'source_url': media.get('source_url'),
+        'duration_ms': media.get('duration_ms'),
+    })
+
+
+def read_daemon_token():
+    path = os.path.expanduser('~/.xport/secret')
+    try:
+        with open(path, 'r') as f:
+            return f.read().strip()
+    except OSError as e:
+        raise XPortError('set --daemon-token or ensure ~/.xport/secret is readable') from e
+
+
 def run_db(args):
     try:
         import psycopg
@@ -155,7 +228,18 @@ def run_db(args):
             ).fetchone()
             if not row:
                 raise XPortError(f'tweet not found: {args.tweet_id}')
-            return json_ready(row)
+            tweet = json_ready(row)
+            if args.include_media:
+                tweet['media'] = db_media_for_tweet(conn, args.tweet_id)
+            return tweet
+        if args.command == 'media':
+            return db_media_for_tweet(conn, args.tweet_id, require_tweet=True)
+        if args.command == 'media-content':
+            if not args.data_url:
+                raise XPortError('media-content currently requires --data-url')
+            return db_media_content(conn, args.media_id)
+        if args.command == 'transcribe':
+            raise XPortError('transcribe requires --api-url so the daemon can update the hosted API')
         if args.command == 'stats':
             row = conn.execute(
                 """
@@ -170,7 +254,10 @@ def run_db(args):
             ).fetchone()
             return json_ready(row)
         rows = conn.execute(*build_tweet_query(args)).fetchall()
-        return [json_ready(row) for row in rows]
+        tweets = [json_ready(row) for row in rows]
+        if args.include_media and tweets:
+            attach_db_media(conn, tweets)
+        return tweets
 
 
 def build_tweet_query(args):
@@ -210,6 +297,77 @@ def projection(include_raw):
     if include_raw:
         fields.append('raw')
     return ', '.join(fields)
+
+
+MEDIA_FIELDS = [
+    'media_id',
+    'tweet_id',
+    'media_index',
+    'media_type',
+    'source_url',
+    'alt_text',
+    'duration_ms',
+    'width',
+    'height',
+    'transcript_text',
+    'transcript_model',
+    'transcript_status',
+    'transcript_error',
+    'transcribed_at',
+    'asset_status',
+    'asset_mime_type',
+    'asset_byte_size',
+    'content_sha256',
+    'created_at',
+    'updated_at',
+]
+
+
+def db_media_for_tweet(conn, tweet_id, require_tweet=False):
+    if require_tweet:
+        exists = conn.execute('select 1 from tweets where tweet_id = %s', (tweet_id,)).fetchone()
+        if not exists:
+            raise XPortError(f'tweet not found: {tweet_id}')
+    rows = conn.execute(
+        f"select {', '.join(MEDIA_FIELDS)} from tweet_media where tweet_id = %s order by media_index asc",
+        (tweet_id,),
+    ).fetchall()
+    return [json_ready(row) for row in rows]
+
+
+def attach_db_media(conn, tweets):
+    tweet_ids = [tweet['tweet_id'] for tweet in tweets]
+    rows = conn.execute(
+        f"select {', '.join(MEDIA_FIELDS)} from tweet_media where tweet_id = any(%s) order by tweet_id, media_index asc",
+        (tweet_ids,),
+    ).fetchall()
+    by_tweet = {tweet_id: [] for tweet_id in tweet_ids}
+    for row in rows:
+        item = json_ready(row)
+        by_tweet.setdefault(item['tweet_id'], []).append(item)
+    for tweet in tweets:
+        tweet['media'] = by_tweet.get(tweet['tweet_id'], [])
+
+
+def db_media_content(conn, media_id):
+    row = conn.execute(
+        'select media_id, asset_mime_type, asset_bytes from tweet_media where media_id = %s',
+        (media_id,),
+    ).fetchone()
+    if not row:
+        raise XPortError(f'media not found: {media_id}')
+    raw = row['asset_bytes']
+    if raw is None:
+        raise XPortError(f'media asset not stored: {media_id}')
+    if isinstance(raw, memoryview):
+        raw = raw.tobytes()
+    elif not isinstance(raw, bytes):
+        raw = bytes(raw)
+    mime_type = row['asset_mime_type'] or 'application/octet-stream'
+    return {
+        'media_id': row['media_id'],
+        'data_url': f'data:{mime_type};base64,{base64.b64encode(raw).decode("ascii")}',
+    }
 
 
 def bounded(value, minimum, maximum):

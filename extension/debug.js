@@ -14,6 +14,7 @@ const debugToggle = document.getElementById('debug-toggle');
 const verboseToggle = document.getElementById('verbose-toggle');
 const discoveredSection = document.getElementById('discovered-section');
 const discoveredList = document.getElementById('discovered-list');
+const tweetsBody = document.getElementById('tweets-body');
 
 function refreshHealth() {
   chrome.runtime.sendMessage({ type: 'GET_STATUS' }, (resp) => {
@@ -45,6 +46,8 @@ function refreshHealth() {
 
 refreshHealth();
 setInterval(refreshHealth, 5000);
+refreshStoredTweets();
+setInterval(refreshStoredTweets, 5000);
 
 debugToggle.addEventListener('change', () => {
   chrome.runtime.sendMessage({ type: 'SET_DEBUG', debugLogging: debugToggle.checked }, () => {
@@ -58,12 +61,138 @@ verboseToggle.addEventListener('change', () => {
   });
 });
 
+function refreshStoredTweets() {
+  chrome.runtime.sendMessage({ type: 'GET_STORED_TWEETS', limit: 50 }, (resp) => {
+    if (!resp?.ok) {
+      renderTweetMessage(resp?.error || 'Stored tweets are unavailable.');
+      return;
+    }
+    renderTweets(resp.tweets || []);
+  });
+}
+
+function renderTweetMessage(message) {
+  tweetsBody.innerHTML = '';
+  const tr = document.createElement('tr');
+  const td = document.createElement('td');
+  td.colSpan = 5;
+  td.textContent = message;
+  tr.appendChild(td);
+  tweetsBody.appendChild(tr);
+}
+
+function renderTweets(tweets) {
+  tweetsBody.innerHTML = '';
+  if (tweets.length === 0) {
+    renderTweetMessage('No stored tweets found in Postgres.');
+    return;
+  }
+  for (const tweet of tweets) {
+    const tr = document.createElement('tr');
+    appendTweetSummaryCell(tr, tweet);
+    appendTweetCell(tr, summarizeMedia(tweet.media || []));
+    appendTweetCell(tr, tweet.source_endpoint || 'unknown');
+    appendTweetCell(tr, formatDateTime(tweet.captured_at || tweet.created_at));
+    const actions = document.createElement('td');
+    for (const item of tweet.media || []) {
+      if (item.media_type === 'video' || item.media_type === 'animated_gif') {
+        actions.appendChild(mediaButton('Transcribe video', () => transcribeMedia(tweet, item)));
+      }
+      if (item.transcript_status === 'done') {
+        actions.appendChild(mediaButton('View transcript', () => viewTranscript(item)));
+      }
+    }
+    if (!actions.children.length) actions.textContent = '—';
+    tr.appendChild(actions);
+    tweetsBody.appendChild(tr);
+  }
+}
+
+function appendTweetSummaryCell(tr, tweet) {
+  const td = document.createElement('td');
+  const author = document.createElement('div');
+  author.className = 'tweet-author';
+  const username = tweet.author_username ? `@${tweet.author_username}` : 'Unknown author';
+  author.textContent = tweet.author_name ? `${tweet.author_name} (${username})` : username;
+  const text = document.createElement('div');
+  text.className = 'tweet-text';
+  text.textContent = tweet.text || 'No text captured.';
+  td.append(author, text);
+  if (tweet.url) {
+    const link = document.createElement('a');
+    link.href = tweet.url;
+    link.target = '_blank';
+    link.rel = 'noreferrer';
+    link.textContent = 'Open on X';
+    td.appendChild(link);
+  }
+  tr.appendChild(td);
+}
+
+function appendTweetCell(tr, text) {
+  const td = document.createElement('td');
+  td.textContent = text;
+  tr.appendChild(td);
+}
+
+function summarizeMedia(media) {
+  if (!media.length) return '—';
+  const counts = new Map();
+  for (const item of media) {
+    const key = item.media_type || 'media';
+    counts.set(key, (counts.get(key) || 0) + 1);
+  }
+  const parts = [...counts.entries()].map(([type, count]) => `${count} ${type}${count === 1 ? '' : 's'}`);
+  const photos = media.filter(item => item.media_type === 'photo');
+  if (photos.length) {
+    const stored = photos.filter(item => item.asset_status === 'stored').length;
+    parts.push(`${stored}/${photos.length} images saved`);
+  }
+  const videos = media.filter(item => item.media_type === 'video' || item.media_type === 'animated_gif');
+  if (videos.length) {
+    const done = videos.filter(item => item.transcript_status === 'done').length;
+    parts.push(`${done}/${videos.length} transcripts`);
+  }
+  return parts.join(', ');
+}
+
+function formatDateTime(value) {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '—';
+  return date.toLocaleString();
+}
+
+function mediaButton(label, onClick) {
+  const btn = document.createElement('button');
+  btn.className = 'small-btn';
+  btn.textContent = label;
+  btn.addEventListener('click', onClick);
+  return btn;
+}
+
+function transcribeMedia(tweet, item) {
+  chrome.runtime.sendMessage({
+    type: 'TRANSCRIBE_MEDIA',
+    mediaId: item.media_id,
+    tweetId: tweet.tweet_id,
+    sourceUrl: item.source_url,
+    durationMs: item.duration_ms,
+  }, refreshStoredTweets);
+}
+
+function viewTranscript(item) {
+  sandboxOutput.classList.add('visible');
+  sandboxOutput.classList.remove('error');
+  sandboxOutput.textContent = item.transcript_text || 'Transcript is marked done, but no transcript text was returned.';
+}
+
 // --- Capture events ---
 
 const eventsBody = document.getElementById('events-body');
 const autoScrollCheckbox = document.getElementById('auto-scroll');
 const clearBtn = document.getElementById('clear-events');
-const eventsWrap = document.querySelector('.events-wrap');
+const eventsWrap = document.getElementById('events-wrap');
 const traceStorage = chrome.storage.session || chrome.storage.local;
 const traceArea = chrome.storage.session ? 'session' : 'local';
 
@@ -84,7 +213,7 @@ function renderEvents(events) {
 
 function appendEventRow(ev) {
   const tr = document.createElement('tr');
-  const cells = [formatTime(ev.timestamp), ev.endpoint, ev.tweetId || '—', ev.status, ev.reason || ''];
+  const cells = [formatTime(ev.timestamp), ev.endpoint, ev.tweetLabel || '—', ev.status, ev.reason || ''];
   for (const text of cells) {
     const td = document.createElement('td');
     td.textContent = text;

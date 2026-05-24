@@ -12,40 +12,34 @@
  *
  * - Tweets without an id are always new (and not tracked).
  * - Article tweets bypass dedup — they enrich a previously captured stub.
- * - When `options.imageBackfill` is set and the tweet has photo media,
- *   a duplicate is also let through once per session (tracked in
- *   `options.imageCheckedIds`) so the daemon can download images that
- *   were skipped when image-download was off at original capture time.
- *   The downloader's per-file `os.path.exists` check makes repeats cheap.
+ * - Media-bearing tweets bypass dedup once when a prior capture had no media.
  */
-export function dedupTweet(tweet, seenIds, options = {}) {
-  const { imageBackfill = false, imageCheckedIds = null } = options;
-
+export function dedupTweet(tweet, seenIds, mediaSeenIds = null) {
   const isDup = !!(tweet.id && seenIds.has(tweet.id));
   const isArticle = !!tweet.is_article;
-  const wantsImageBackfill = (
-    imageBackfill &&
-    !!tweet.id &&
-    imageCheckedIds &&
-    !imageCheckedIds.has(tweet.id) &&
-    hasPhotoMedia(tweet)
+  const hasMedia = tweetHasMedia(tweet);
+  const isMediaEnrichment = !!(
+    isDup &&
+    hasMedia &&
+    mediaSeenIds &&
+    !mediaSeenIds.has(tweet.id)
   );
 
-  if (isDup && !isArticle && !wantsImageBackfill) {
+  if (isDup && !isArticle && !isMediaEnrichment) {
     return false;
   }
 
-  if (tweet.id) seenIds.add(tweet.id);
-  if (wantsImageBackfill) imageCheckedIds.add(tweet.id);
+  if (tweet.id) {
+    seenIds.add(tweet.id);
+    if (hasMedia && mediaSeenIds) mediaSeenIds.add(tweet.id);
+  }
 
   return true;
 }
 
-function hasPhotoMedia(tweet) {
-  const media = tweet.media;
-  if (!Array.isArray(media)) return false;
-  for (const m of media) {
-    if (m && m.type === 'photo') return true;
-  }
-  return false;
+function tweetHasMedia(tweet) {
+  return !!(
+    Array.isArray(tweet?.media) && tweet.media.length > 0 ||
+    Array.isArray(tweet?.article?.media) && tweet.article.media.length > 0
+  );
 }

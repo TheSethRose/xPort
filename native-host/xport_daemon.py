@@ -8,16 +8,15 @@ import platform
 import signal
 import sys
 import time
-import uuid
 import threading
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
-from xport_core import (DEFAULT_OUTPUT_DIR, load_seen_ids, resolve_output_dir,
-                       validate_output_dir, write_tweets, write_log,
-                       write_dump, test_path,
-                       check_ytdlp, start_download, get_download_status,
-                       collect_image_jobs, get_image_downloader,
-                       forward_tweets_to_api)
+from xport_core import (DEFAULT_API_URL, DEFAULT_INGEST_TOKEN,
+                       DEFAULT_OUTPUT_DIR, resolve_output_dir,
+                       validate_output_dir, write_log, write_dump, test_path,
+                       forward_tweets_to_api, list_stored_tweets_from_api,
+                       enqueue_image_asset_storage, start_media_transcription,
+                       get_transcription_status, fetch_store_image_asset)
 
 VERSION = '0.23.1'
 BIND_HOST = '127.0.0.1'
@@ -50,8 +49,6 @@ def load_token():
 
 # Module-level state shared across requests
 _token = None
-_seen_ids = set()
-_custom_dirs = set()
 _state_lock = threading.Lock()
 
 
@@ -138,12 +135,14 @@ class DaemonHandler(BaseHTTPRequestHandler):
             self._handle_dump(body)
         elif self.path == '/test-path':
             self._handle_test_path(body)
-        elif self.path == '/check-ytdlp':
-            self._handle_check_ytdlp(body)
-        elif self.path == '/download-video':
-            self._handle_download_video(body)
-        elif self.path == '/download-status':
-            self._handle_download_status(body)
+        elif self.path == '/stored-tweets':
+            self._handle_stored_tweets(body)
+        elif self.path == '/transcribe-media':
+            self._handle_transcribe_media(body)
+        elif self.path == '/transcription-status':
+            self._handle_transcription_status(body)
+        elif self.path == '/fetch-media-image':
+            self._handle_fetch_media_image(body)
         else:
             self._send_json({'ok': False, 'error': 'Not found'}, 404)
         elapsed = (time.monotonic() - t0) * 1000
@@ -151,33 +150,33 @@ class DaemonHandler(BaseHTTPRequestHandler):
 
     def _handle_tweets(self, body):
         try:
-            msg_dir = body.get('outputDir', '').strip()
-            # Strict boolean: only `true` enables. Avoids string 'false' / number 1
-            # silently turning the feature on.
-            image_download = body.get('image_download') is True
-            with _state_lock:
-                out_dir = resolve_output_dir(msg_dir, DEFAULT_OUTPUT_DIR, _seen_ids, _custom_dirs)
-                tweets = body.get('tweets', [])
-                # Compute jobs only when we'll actually fetch — collect_image_jobs
-                # may strip unsafe article local_paths from the tweets, so we
-                # must call it before write_tweets to keep the JSONL clean.
-                pending_images = collect_image_jobs(tweets, out_dir) if image_download else []
-                count, dupes = write_tweets(tweets, out_dir, _seen_ids)
-            queued = 0
-            if pending_images:
-                get_image_downloader().enqueue(pending_images, out_dir)
-                queued = len(pending_images)
-            forward = forward_tweets_to_api(tweets if count else [])
-            log_debug(f'  Tweets: {count} written, {dupes} dupes, {queued} images queued -> {out_dir}')
-            response = {'ok': True, 'count': count, 'dupes': dupes, 'images_queued': queued}
-            if forward.get('enabled'):
-                response['forwarded'] = forward.get('ok') is True
-                if forward.get('ok'):
-                    response['remote_count'] = forward.get('count')
-                    response['remote_batch_id'] = forward.get('batch_id')
-                else:
-                    response['remote_error'] = forward.get('error')
-                    log_info(f'WARN /tweets remote forward failed: {forward.get("error")}')
+            tweets = body.get('tweets', [])
+            if not isinstance(tweets, list):
+                self._send_json({'ok': False, 'error': 'tweets must be an array'}, 400)
+                return
+
+            forward = forward_tweets_to_api(tweets)
+            if forward.get('ok') is not True:
+                error = forward.get('error') or 'Postgres ingest failed'
+                log_info(f'WARN /tweets remote ingest failed: {error}')
+                status = 503 if not forward.get('enabled') else 502
+                self._send_json({'ok': False, 'error': error}, status)
+                return
+
+            count = forward.get('count')
+            if count is None:
+                count = len(tweets)
+            images_queued = enqueue_image_asset_storage(tweets)
+            log_debug(f'  Tweets: {count} ingested; images queued: {images_queued}')
+            response = {
+                'ok': True,
+                'count': count,
+                'dupes': 0,
+                'images_queued': images_queued,
+                'forwarded': True,
+                'remote_count': count,
+                'remote_batch_id': forward.get('batch_id'),
+            }
             self._send_json(response)
         except ValueError as e:
             self._send_json({'ok': False, 'error': str(e)}, 400)
@@ -190,7 +189,7 @@ class DaemonHandler(BaseHTTPRequestHandler):
         try:
             msg_dir = body.get('outputDir', '').strip()
             with _state_lock:
-                out_dir = resolve_output_dir(msg_dir, DEFAULT_OUTPUT_DIR, _seen_ids, _custom_dirs)
+                out_dir = resolve_output_dir(msg_dir, DEFAULT_OUTPUT_DIR)
             lines = body.get('lines', [])
             logged = write_log(lines, out_dir)
             self._send_json({'ok': True, 'logged': logged})
@@ -205,7 +204,7 @@ class DaemonHandler(BaseHTTPRequestHandler):
         try:
             msg_dir = body.get('outputDir', '').strip()
             with _state_lock:
-                out_dir = resolve_output_dir(msg_dir, DEFAULT_OUTPUT_DIR, _seen_ids, _custom_dirs)
+                out_dir = resolve_output_dir(msg_dir, DEFAULT_OUTPUT_DIR)
                 filename = body.get('filename', 'dump.json')
                 content = body.get('content', '')
                 path = write_dump(filename, content, out_dir)
@@ -232,33 +231,58 @@ class DaemonHandler(BaseHTTPRequestHandler):
             log_info(f'ERROR /test-path: {e}')
             self._send_json({'ok': False, 'error': str(e)}, 500)
 
-    def _handle_check_ytdlp(self, body):
-        available = check_ytdlp()
-        log_debug(f'  yt-dlp available: {available}')
-        self._send_json({'ok': True, 'available': available})
-
-    def _handle_download_video(self, body):
+    def _handle_stored_tweets(self, body):
         try:
-            tweet_url = body.get('tweetUrl', '')
-            direct_url = body.get('directUrl', '')
-            post_date = body.get('postDate', '')
-            msg_dir = body.get('outputDir', '').strip()
-            with _state_lock:
-                out_dir = resolve_output_dir(msg_dir, DEFAULT_OUTPUT_DIR, _seen_ids, _custom_dirs)
-            download_id = str(uuid.uuid4())
-            start_download(download_id, tweet_url, direct_url, out_dir, post_date)
-            log_debug(f'  Download started: {download_id} -> {tweet_url}')
-            self._send_json({'ok': True, 'downloadId': download_id})
+            tweets = list_stored_tweets_from_api(
+                limit=body.get('limit', 50),
+                offset=body.get('offset', 0),
+            )
+            self._send_json({'ok': True, 'tweets': tweets})
         except ValueError as e:
             self._send_json({'ok': False, 'error': str(e)}, 400)
         except Exception as e:
-            log_info(f'ERROR /download-video: {e}')
+            log_info(f'ERROR /stored-tweets: {e}')
+            log_debug(f'  Traceback: {_format_exc()}')
             self._send_json({'ok': False, 'error': str(e)}, 500)
 
-    def _handle_download_status(self, body):
-        download_id = body.get('downloadId', '')
-        status = get_download_status(download_id)
-        self._send_json({'ok': True, **status})
+    def _handle_transcribe_media(self, body):
+        try:
+            result = start_media_transcription(
+                body.get('media_id') or body.get('mediaId'),
+                body.get('tweet_id') or body.get('tweetId'),
+                body.get('source_url') or body.get('sourceUrl'),
+                body.get('duration_ms') or body.get('durationMs'),
+            )
+            status_code = 409 if result.get('status') == 'busy' else 200
+            self._send_json(result, status_code)
+        except ValueError as e:
+            self._send_json({'ok': False, 'error': str(e)}, 400)
+        except Exception as e:
+            log_info(f'ERROR /transcribe-media: {e}')
+            log_debug(f'  Traceback: {_format_exc()}')
+            self._send_json({'ok': False, 'error': str(e)}, 500)
+
+    def _handle_transcription_status(self, body):
+        media_id = body.get('media_id') or body.get('mediaId')
+        if not media_id:
+            self._send_json({'ok': False, 'error': 'media_id is required'}, 400)
+            return
+        self._send_json({'ok': True, 'media_id': media_id, **get_transcription_status(str(media_id))})
+
+    def _handle_fetch_media_image(self, body):
+        try:
+            result = fetch_store_image_asset(
+                body.get('media_id') or body.get('mediaId'),
+                body.get('tweet_id') or body.get('tweetId'),
+                body.get('source_url') or body.get('sourceUrl'),
+            )
+            self._send_json(result)
+        except ValueError as e:
+            self._send_json({'ok': False, 'error': str(e)}, 400)
+        except Exception as e:
+            log_info(f'ERROR /fetch-media-image: {e}')
+            log_debug(f'  Traceback: {_format_exc()}')
+            self._send_json({'ok': False, 'error': str(e)}, 500)
 
 
 def _format_exc():
@@ -285,6 +309,7 @@ def _log_startup_diagnostics():
     log_info(f'  Script:     {os.path.abspath(__file__)}')
     log_info(f'  Platform:   {platform.system()} {platform.release()}')
     log_info(f'  Output dir: {DEFAULT_OUTPUT_DIR}')
+    log_info(f'  Postgres:   {"configured" if DEFAULT_API_URL and DEFAULT_INGEST_TOKEN else "NOT configured"}')
     log_info(f'  Token:      loaded ({len(_token)} chars)')
     log_info(f'  Log level:  {LOG_LEVEL}')
 
@@ -295,24 +320,18 @@ def _log_startup_diagnostics():
     except Exception as e:
         log_info(f'  Output dir: NOT writable ({e})')
 
-    # Check yt-dlp
-    ytdlp = check_ytdlp()
-    log_info(f'  yt-dlp:     {"available" if ytdlp else "not found"}')
-
 
 def main():
-    global _token, _seen_ids
+    global _token
 
     _setup_stdio()
 
     _token = load_token()
 
-    # Initialize output directory and seen IDs
+    # Initialize local artifact directory used for debug logs, dumps, media, and videos.
     os.makedirs(DEFAULT_OUTPUT_DIR, exist_ok=True)
-    _seen_ids = load_seen_ids(DEFAULT_OUTPUT_DIR)
 
     _log_startup_diagnostics()
-    log_info(f'  Seen IDs:   {len(_seen_ids)} loaded')
 
     try:
         server = ThreadingHTTPServer((BIND_HOST, BIND_PORT), DaemonHandler)
@@ -323,7 +342,7 @@ def main():
 
     def shutdown(signum, frame):
         log_info(f'Received signal {signum}, shutting down...')
-        server.shutdown()
+        threading.Thread(target=server.shutdown, daemon=True).start()
 
     signal.signal(signal.SIGINT, shutdown)
     if platform.system() == 'Windows':

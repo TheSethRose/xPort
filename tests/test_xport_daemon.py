@@ -80,6 +80,21 @@ def _raw_post(base_url, path='/', raw_body=b'', token=None, content_length=None)
         return e.code, json.loads(e.read())
 
 
+def _stub_forward_success(monkeypatch, forwarded=None, delay=0):
+    """Make daemon tweet ingestion look like a successful Postgres API write."""
+    import time
+
+    def fake_forward(tweets):
+        if delay:
+            time.sleep(delay)
+        if forwarded is not None:
+            forwarded.extend(tweets)
+        return {'enabled': True, 'ok': True, 'count': len(tweets), 'batch_id': 'remote-1'}
+
+    monkeypatch.setattr(xport_daemon, 'forward_tweets_to_api', fake_forward)
+    monkeypatch.setattr(xport_daemon, 'enqueue_image_asset_storage', lambda tweets: 0)
+
+
 # ---------------------------------------------------------------------------
 # Tests — Content-Length validation
 # ---------------------------------------------------------------------------
@@ -197,10 +212,12 @@ class TestAuthorizedRequest:
         assert body['ok'] is True
         assert 'version' in body
 
-    def test_valid_post_succeeds(self, daemon_url):
+    def test_valid_post_succeeds(self, daemon_url, monkeypatch):
         """An authorized POST /tweets with valid body should succeed."""
         import tempfile
         out_dir = tempfile.mkdtemp(dir=os.path.expanduser('~'), prefix='.xport-test-')
+        forwarded = []
+        _stub_forward_success(monkeypatch, forwarded)
         try:
             status, body = _post(
                 daemon_url, '/tweets',
@@ -210,12 +227,15 @@ class TestAuthorizedRequest:
             assert status == 200
             assert body['ok'] is True
             assert body['count'] == 1
+            assert body['forwarded'] is True
+            assert forwarded == [{'id': 'valid-post-1', 'text': 'hello'}]
+            assert not [p for p in os.listdir(out_dir) if p.startswith('tweets-')]
         finally:
             import shutil
             shutil.rmtree(out_dir, ignore_errors=True)
 
     def test_tweets_forward_to_api_when_configured(self, daemon_url, monkeypatch):
-        """POST /tweets includes remote forward result when API forwarding is configured."""
+        """POST /tweets includes remote ingest result when API forwarding is configured."""
         import shutil
         import tempfile
 
@@ -242,13 +262,55 @@ class TestAuthorizedRequest:
         finally:
             shutil.rmtree(out_dir, ignore_errors=True)
 
+    def test_tweets_rejected_when_postgres_not_configured(self, daemon_url, monkeypatch):
+        """POST /tweets fails closed instead of falling back to local JSON storage."""
+        monkeypatch.setattr(
+            xport_daemon,
+            'forward_tweets_to_api',
+            lambda tweets: {
+                'enabled': False,
+                'ok': False,
+                'error': 'XPORT_API_URL and XPORT_INGEST_TOKEN are required for tweet capture',
+            },
+        )
+        status, body = _post(
+            daemon_url, '/tweets',
+            body={'tweets': [{'id': 'no-db', 'text': 'hello'}]},
+            token=TEST_TOKEN,
+        )
+        assert status == 503
+        assert body['ok'] is False
+        assert 'XPORT_API_URL' in body['error']
+
+    def test_stored_tweets_proxies_postgres_api(self, daemon_url, monkeypatch):
+        """Debug dashboard gets human-readable stored tweets from Postgres."""
+        captured = []
+
+        def fake_list(limit=50, offset=0):
+            captured.append((limit, offset))
+            return [{'tweet_id': '1', 'author_username': 'seth', 'text': 'hello', 'media': []}]
+
+        monkeypatch.setattr(xport_daemon, 'list_stored_tweets_from_api', fake_list)
+        status, body = _post(
+            daemon_url,
+            '/stored-tweets',
+            body={'limit': 25, 'offset': 5},
+            token=TEST_TOKEN,
+        )
+        assert status == 200
+        assert body == {
+            'ok': True,
+            'tweets': [{'tweet_id': '1', 'author_username': 'seth', 'text': 'hello', 'media': []}],
+        }
+        assert captured == [(25, 5)]
+
     def test_zero_content_length_post(self, daemon_url):
         """POST with Content-Length: 0 exercises _read_json returning {}."""
         import http.client
         port = int(daemon_url.rsplit(':', 1)[1])
         conn = http.client.HTTPConnection('127.0.0.1', port)
-        # Use /check-ytdlp which ignores the body — avoids output-dir issues
-        conn.putrequest('POST', '/check-ytdlp')
+        # Use /log with an empty body; it does not require tweet forwarding.
+        conn.putrequest('POST', '/log')
         conn.putheader('Content-Type', 'application/json')
         conn.putheader('Content-Length', '0')
         conn.putheader('Authorization', f'Bearer {TEST_TOKEN}')
@@ -257,21 +319,23 @@ class TestAuthorizedRequest:
         body = json.loads(resp.read())
         assert resp.status == 200
         assert body['ok'] is True
+        assert body['logged'] == 0
         conn.close()
 
-    def test_tweets_image_download_flag_enqueues(self, daemon_url, monkeypatch):
-        """When image_download=true, photo media should be enqueued."""
+    def test_tweets_auto_queues_image_asset_storage(self, daemon_url, monkeypatch):
+        """POST /tweets auto-queues photo storage after successful Postgres ingest."""
         import shutil
         import tempfile
 
         out_dir = tempfile.mkdtemp(dir=os.path.expanduser('~'), prefix='.xport-test-')
-        captured = []
+        _stub_forward_success(monkeypatch)
+        queued = []
 
-        class _Fake:
-            def enqueue(self, jobs, where):
-                captured.append((list(jobs), where))
+        def fake_enqueue(tweets):
+            queued.extend(tweets)
+            return 1
 
-        monkeypatch.setattr(xport_daemon, 'get_image_downloader', lambda: _Fake())
+        monkeypatch.setattr(xport_daemon, 'enqueue_image_asset_storage', fake_enqueue)
         try:
             tweet = {
                 'id': '42',
@@ -285,23 +349,19 @@ class TestAuthorizedRequest:
             assert status == 200
             assert body['ok'] is True
             assert body['images_queued'] == 1
-            assert len(captured) == 1
-            jobs, where = captured[0]
-            assert where == os.path.realpath(out_dir)
-            assert jobs[0]['rel_path'] == 'media/42/HGK.jpg'
+            assert queued == [tweet]
         finally:
             shutil.rmtree(out_dir, ignore_errors=True)
 
-    def test_tweets_no_flag_does_not_enqueue(self, daemon_url, monkeypatch):
-        """Without image_download flag, the downloader is not invoked and
-        local_path is NOT injected (keeps JSONL clean for users who don't
-        opt in, and matches the golden-fixture E2E test expectations)."""
+    def test_tweets_auto_queue_does_not_mutate_payload(self, daemon_url, monkeypatch):
+        """Auto image storage must not inject local paths into forwarded tweets."""
         import shutil
         import tempfile
 
         out_dir = tempfile.mkdtemp(dir=os.path.expanduser('~'), prefix='.xport-test-')
-        called = []
-        monkeypatch.setattr(xport_daemon, 'get_image_downloader', lambda: called.append(1))
+        forwarded = []
+        _stub_forward_success(monkeypatch, forwarded)
+        monkeypatch.setattr(xport_daemon, 'enqueue_image_asset_storage', lambda tweets: 1)
         try:
             tweet = {
                 'id': '43',
@@ -313,24 +373,75 @@ class TestAuthorizedRequest:
                 token=TEST_TOKEN,
             )
             assert status == 200
-            assert body['images_queued'] == 0
-            assert called == []
-            files = [p for p in os.listdir(out_dir) if p.startswith('tweets-')]
-            assert len(files) == 1
-            line = open(os.path.join(out_dir, files[0])).readline()
-            # local_path NOT present when image_download is off.
-            assert 'local_path' not in line
+            assert body['images_queued'] == 1
+            assert 'local_path' not in json.dumps(forwarded)
+            assert not [p for p in os.listdir(out_dir) if p.startswith('tweets-')]
         finally:
             shutil.rmtree(out_dir, ignore_errors=True)
 
-    def test_tweets_string_truthy_does_not_enable(self, daemon_url, monkeypatch):
-        """image_download must be the literal True — string 'false' or 1 must NOT enable."""
+    def test_passive_tweets_do_not_start_transcription(self, daemon_url, monkeypatch):
+        """Passive /tweets only forwards metadata; it must not fetch/transcribe media."""
+        _stub_forward_success(monkeypatch)
+        called = []
+        monkeypatch.setattr(xport_daemon, 'start_media_transcription', lambda *args: called.append(args))
+        status, body = _post(
+            daemon_url,
+            '/tweets',
+            body={'tweets': [{'id': '55', 'media': [{'type': 'video', 'url': 'https://video.twimg.com/a.mp4'}]}]},
+            token=TEST_TOKEN,
+        )
+        assert status == 200
+        assert body['ok'] is True
+        assert called == []
+
+    def test_transcribe_media_rejects_unallowed_host(self, daemon_url):
+        """Explicit transcription still validates the media URL host."""
+        status, body = _post(
+            daemon_url,
+            '/transcribe-media',
+            body={
+                'media_id': '55:0',
+                'tweet_id': '55',
+                'source_url': 'https://example.com/a.mp4',
+                'duration_ms': 1000,
+            },
+            token=TEST_TOKEN,
+        )
+        assert status == 400
+        assert 'not allowed' in body['error']
+
+    def test_transcribe_media_queues_explicit_job(self, daemon_url, monkeypatch):
+        """Explicit transcription route delegates to the on-demand job runner."""
+        captured = []
+
+        def fake_start(media_id, tweet_id, source_url, duration_ms):
+            captured.append((media_id, tweet_id, source_url, duration_ms))
+            return {'ok': True, 'media_id': media_id, 'status': 'queued'}
+
+        monkeypatch.setattr(xport_daemon, 'start_media_transcription', fake_start)
+        status, body = _post(
+            daemon_url,
+            '/transcribe-media',
+            body={
+                'media_id': '55:0',
+                'tweet_id': '55',
+                'source_url': 'https://video.twimg.com/a.mp4',
+                'duration_ms': 1000,
+            },
+            token=TEST_TOKEN,
+        )
+        assert status == 200
+        assert body == {'ok': True, 'media_id': '55:0', 'status': 'queued'}
+        assert captured == [('55:0', '55', 'https://video.twimg.com/a.mp4', 1000)]
+
+    def test_tweets_image_download_flag_no_longer_controls_image_queue(self, daemon_url, monkeypatch):
+        """Photo storage is automatic; legacy image_download values do not change it."""
         import shutil
         import tempfile
 
         out_dir = tempfile.mkdtemp(dir=os.path.expanduser('~'), prefix='.xport-test-')
-        called = []
-        monkeypatch.setattr(xport_daemon, 'get_image_downloader', lambda: called.append(1))
+        _stub_forward_success(monkeypatch)
+        monkeypatch.setattr(xport_daemon, 'enqueue_image_asset_storage', lambda tweets: 1)
         try:
             tweet = {
                 'id': '44',
@@ -343,8 +454,7 @@ class TestAuthorizedRequest:
                     token=TEST_TOKEN,
                 )
                 assert status == 200
-                assert body['images_queued'] == 0, f'truthy {bad!r} should not enable'
-            assert called == []
+                assert body['images_queued'] == 1, f'truthy {bad!r} should not alter automatic storage'
         finally:
             shutil.rmtree(out_dir, ignore_errors=True)
 
@@ -376,15 +486,14 @@ class TestConcurrency:
         out_dir = tempfile.mkdtemp(dir=os.path.expanduser('~'), prefix='.xport-test-')
 
         slow_entered = threading.Event()
-        original_write_tweets = xport_daemon.write_tweets
 
-        def slow_write_tweets(tweets, out_dir, seen_ids):
+        def slow_forward_tweets(tweets):
             slow_entered.set()
             time.sleep(1.0)
-            return original_write_tweets(tweets, out_dir, seen_ids)
+            return {'enabled': True, 'ok': True, 'count': len(tweets), 'batch_id': 'remote-1'}
 
         try:
-            with patch.object(xport_daemon, 'write_tweets', side_effect=slow_write_tweets):
+            with patch.object(xport_daemon, 'forward_tweets_to_api', side_effect=slow_forward_tweets):
                 with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
                     # Fire off the slow /tweets request
                     tweets_future = pool.submit(
@@ -394,7 +503,7 @@ class TestConcurrency:
                     )
 
                     # Wait until the slow handler has started
-                    assert slow_entered.wait(timeout=5), 'slow write_tweets never entered'
+                    assert slow_entered.wait(timeout=5), 'slow forward_tweets_to_api never entered'
 
                     # Now /status should respond quickly
                     t0 = time.monotonic()
@@ -412,55 +521,3 @@ class TestConcurrency:
                     assert tweets_body['ok'] is True
         finally:
             shutil.rmtree(out_dir, ignore_errors=True)
-
-    def test_download_status_coherent(self):
-        """get_download_status never returns partial state (e.g. status=done with path=None)."""
-        import time
-
-        download_id = 'coherence-test'
-        errors = []
-        stop = threading.Event()
-
-        # Seed initial state
-        with xport_core._downloads_lock:
-            xport_core._downloads[download_id] = {
-                'status': 'downloading',
-                'progress': 0,
-                'path': None,
-                'error': None,
-            }
-
-        def reader():
-            while not stop.is_set():
-                s = xport_core.get_download_status(download_id)
-                if s['status'] == 'done' and s['path'] is None:
-                    errors.append(f'Incoherent: status=done but path=None')
-                if s['status'] == 'error' and s['error'] is None:
-                    errors.append(f'Incoherent: status=error but error=None')
-
-        def writer():
-            for i in range(200):
-                with xport_core._downloads_lock:
-                    xport_core._downloads[download_id].update(
-                        progress=i, status='done', path='/tmp/video.mp4')
-                with xport_core._downloads_lock:
-                    xport_core._downloads[download_id].update(
-                        progress=0, status='downloading', path=None, error=None)
-            stop.set()
-
-        readers = [threading.Thread(target=reader) for _ in range(4)]
-        for r in readers:
-            r.start()
-        writer_t = threading.Thread(target=writer)
-        writer_t.start()
-
-        writer_t.join(timeout=5)
-        stop.set()
-        for r in readers:
-            r.join(timeout=2)
-
-        # Clean up
-        with xport_core._downloads_lock:
-            del xport_core._downloads[download_id]
-
-        assert not errors, f'Found incoherent reads: {errors[:5]}'

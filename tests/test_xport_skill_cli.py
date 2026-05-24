@@ -22,7 +22,16 @@ class CliApiHandler(BaseHTTPRequestHandler):
             'path': self.path,
             'authorization': self.headers.get('Authorization'),
         })
-        if self.path.startswith('/api/tweets/123'):
+        if self.path.startswith('/api/tweets/123/media'):
+            payload = {
+                'ok': True,
+                'media': [{
+                    'media_id': '123:0',
+                    'tweet_id': '123',
+                    'media_type': 'video',
+                }],
+            }
+        elif self.path.startswith('/api/tweets/123'):
             payload = {
                 'ok': True,
                 'tweet': {
@@ -96,3 +105,20 @@ def test_cli_get_reads_single_tweet_from_xport_api():
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)['tweet_id'] == '123'
     assert CliApiHandler.requests[0]['path'] == '/api/tweets/123'
+
+
+def test_cli_get_include_media_passes_query_flag():
+    with api_server() as server:
+        result = run_cli(['get', '123', '--include-media', '--api-url', server, '--token', 'read-token'])
+
+    assert result.returncode == 0, result.stderr
+    assert CliApiHandler.requests[0]['path'] == '/api/tweets/123?include_media=True'
+
+
+def test_cli_media_lists_tweet_media_from_api():
+    with api_server() as server:
+        result = run_cli(['media', '123', '--api-url', server, '--token', 'read-token'])
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)[0]['media_id'] == '123:0'
+    assert CliApiHandler.requests[0]['path'] == '/api/tweets/123/media'

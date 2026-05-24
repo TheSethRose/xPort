@@ -1,6 +1,6 @@
 {
   "name": "com.xport.host",
-  "description": "XPort native messaging host — writes captured tweets to JSONL",
+  "description": "XPort native messaging host — bootstraps the local daemon token",
   "path": "/path/to/xport_host.py",
   "type": "stdio",
   "allowed_origins": ["chrome-extension://EXTENSION_ID/"]

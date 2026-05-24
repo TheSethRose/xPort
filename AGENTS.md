@@ -2,7 +2,7 @@
 
 ## What This Is
 
-XPort is a browser extension (Chrome + Firefox), local daemon, and hosted ingestion API that passively captures tweets from X/Twitter by intercepting GraphQL API responses the browser already receives. No scraping, no extra browser-side requests — just structured JSONL output of what the user sees, optionally forwarded to PostgreSQL through the hosted API.
+XPort is a Chrome extension, local daemon, and hosted ingestion API that passively captures tweets from X/Twitter by intercepting GraphQL API responses the browser already receives. No scraping, no extra browser-side requests — just structured tweet data sent to PostgreSQL through the hosted API.
 
 **Repo:** github.com/TheSethRose/xPort
 **License:** MIT (public repo)
@@ -20,7 +20,7 @@ extension/content-bridge.js (ISOLATED world)
   ▼
 extension/background.js (Service Worker, ES module)
   │  Parses tweet data via extension/lib/tweet-parser.js
-  │  Deduplicates (Set of seen IDs, max 50k; session storage in dev, local in prod)
+  │  Deduplicates (seen IDs + media-enriched IDs, max 50k; session storage in dev, local in prod)
   │  Batches (50 tweets or 30–45s jittered flush)
   │  Debug logging: intercepts console.log/warn/error, sends to host
   │  Transport: HTTP daemon only (reprobes on failure with 30s cooldown)
@@ -29,29 +29,28 @@ extension/background.js (Service Worker, ES module)
 │ xport_daemon.py (127.0.0.1:17381)                               │
 │   Managed by launchd (macOS), systemd (Linux), Scheduled Task  │
 │   (Windows). Bearer token auth from ~/.xport/secret             │
-│   Endpoints: GET /status, POST /tweets, /log, /test-path,     │
-│   /check-ytdlp, /download-video, /download-status             │
-│   /tweets accepts image_download:true to opt-in to background │
-│   image fetches; returns images_queued in the response.       │
+│   Endpoints: GET /status, POST /tweets, /stored-tweets,       │
+│   /log, /test-path, /transcribe-media, /transcription-status, │
+│   /fetch-media-image. /tweets forwards tweet + media metadata │
+│   to Postgres and queues captured photos for asset storage.   │
 └────────────────────────────────────────────────────────────────┘
 ┌─── Native messaging (token bootstrap only) ───────────────────┐
 │ xport_host.py (Python, stdio)                                   │
-│   Browser native messaging protocol (Chrome/Firefox)           │
+│   Chrome native messaging protocol                             │
 │   Serves GET_TOKEN to bootstrap HTTP transport                 │
 │   Crashes logged to ~/.xport/host-error.log                    │
 └────────────────────────────────────────────────────────────────┘
   │  xport_daemon.py uses shared logic from xport_core.py
   ▼
-tweets-YYYY-MM-DD.jsonl  (daily rotation)
 debug-YYYY-MM-DD.log     (when debug logging enabled)
-media/<tweet_id>/*       (when image download enabled)
-media-manifest.jsonl     (when image download enabled — append-only download log)
-XPort API (optional, configured with XPORT_API_URL + XPORT_INGEST_TOKEN)
+XPort API (required for tweet capture; configured with XPORT_API_URL + XPORT_INGEST_TOKEN)
   │  POST /api/ingest/tweets
   │  GET /api/tweets, /api/tweets/<tweet_id>, /api/stats
+  │  GET /api/tweets/<tweet_id>/media, /api/media/<media_id>
+  │  POST /api/media/<media_id>/transcription, /asset
   ▼
-PostgreSQL tables: tweets, ingest_batches
-skill/xport (optional read-only CLI for Hermes/agentskills)
+PostgreSQL tables: tweets, tweet_media, ingest_batches
+skill/xport (optional CLI for Hermes/agentskills)
   │  Reads from hosted API or DATABASE_URL
   ▼
 Stored XPort captures only; no live X/Twitter requests
@@ -62,24 +61,25 @@ Stored XPort captures only; no live X/Twitter requests
 - **Two content scripts (MAIN + ISOLATED):** MV3 requires this split. MAIN world can patch browser APIs but can't use chrome.runtime. ISOLATED world bridges the gap.
 - **Random event channel:** The CustomEvent name is generated per page load (`'_' + Math.random().toString(36).slice(2)`) and passed via a `<meta>` tag that's immediately removed. Avoids predictable DOM markers.
 - **HTTP-only transport:** All data flows through the HTTP daemon (`xport_daemon.py`), managed by launchd (macOS), systemd (Linux), or Scheduled Task (Windows). On macOS, it runs outside browser TCC sandboxes, allowing writes to protected paths. If the daemon goes down, tweets are buffered in memory and the extension reprobes every 30 seconds until the daemon recovers.
-- **Hosted SQL sync:** When `XPORT_API_URL` and `XPORT_INGEST_TOKEN` are configured on the daemon, successful local tweet batches are forwarded to `POST /api/ingest/tweets`. Local JSONL remains the fallback source of truth if forwarding fails.
-- **Read-only stored capture access:** The hosted API exposes bearer-protected `GET /api/tweets`, `GET /api/tweets/<tweet_id>`, and `GET /api/stats` for stored captures. `skill/xport` wraps those endpoints for Hermes/agentskills and can fall back to direct `DATABASE_URL` reads.
+- **PostgreSQL-first capture:** `POST /tweets` on the daemon forwards every tweet batch to `POST /api/ingest/tweets`. If `XPORT_API_URL` and `XPORT_INGEST_TOKEN` are missing or the ingest API rejects the batch, the daemon returns an error and the extension keeps the batch buffered. There is no local tweet JSONL fallback. After successful ingest, the daemon queues captured `pbs.twimg.com` photos for asset storage in `tweet_media`.
+- **Stored capture access:** The hosted API exposes bearer-protected tweet and media read endpoints. `skill/xport` wraps those endpoints for Hermes/agentskills and can fall back to direct `DATABASE_URL` reads.
 - **Token bootstrap via native messaging:** On first run, the extension connects to `xport_host.py` via native messaging to request `GET_TOKEN` (reads `~/.xport/secret`). The token is cached in `chrome.storage.local` for subsequent HTTP requests. The native host handles nothing else — all data goes through HTTP.
-- **Shared core logic:** `xport_core.py` contains all file I/O logic (load seen IDs, resolve output dir, write tweets/logs, test path), used by `xport_daemon.py`.
+- **Debug dashboard data:** The dashboard should display recent stored tweets from Postgres through daemon `/stored-tweets`, not raw tweet IDs from the extension session cache.
+- **Shared core logic:** `xport_core.py` contains artifact file I/O, API forwarding, path validation, stored tweet lookup, automatic image asset queueing, and explicit media enrichment helpers used by `xport_daemon.py`.
 - **Environment detection:** `isDevMode = !chrome.runtime.getManifest().update_url` — packed CWS extensions have `update_url`, unpacked don't. Used to switch seenIds storage between session (dev) and local (production).
 - **Volatile dev cache:** In dev mode (unpacked), `seenIds` is stored in `chrome.storage.session`, which clears on extension reload. This eliminates the need to manually clear storage during development. Production behavior is unchanged (persisted to `chrome.storage.local`).
-- **Dedup in service worker:** Multiple tabs feed the same service worker. `seenIds` Set (max 50,000, FIFO eviction) prevents duplicates. In production, persisted to `chrome.storage.local` across sessions; in dev mode, uses volatile `chrome.storage.session`. Both host and daemon also load seen IDs from existing JSONL files on startup.
+- **Dedup in service worker:** Multiple tabs feed the same service worker. `seenIds` Set (max 50,000, FIFO eviction) prevents duplicates. `mediaSeenIds` lets a duplicate tweet enqueue once when a later GraphQL response adds media that an earlier text-only capture missed. In production, both sets are persisted to `chrome.storage.local`; in dev mode, they use volatile `chrome.storage.session`.
 - **Jittered flush:** Batch flush uses `setTimeout` with randomized interval (30s base + up to 50% jitter = 30–45s), re-randomized each cycle. Avoids clockwork-regular patterns.
-- **Path validation:** When the user sets a custom output directory, the service worker sends a `TEST_PATH` request to the HTTP daemon, which attempts `makedirs` + write/delete of a temp file before accepting the path.
+- **Path validation:** When the user sets a custom media/debug directory, the service worker sends a `TEST_PATH` request to the HTTP daemon, which attempts `makedirs` + write/delete of a temp file before accepting the path.
 - **Error resilience:** The native host logs crashes to `~/.xport/host-error.log` with Python version and traceback. The HTTP daemon returns error status codes and logs startup diagnostics (Python version, output dir, token status). When the daemon is unreachable, the extension shows a red "!" badge and buffers tweets until the next successful reprobe (30s cooldown). The popup auto-refreshes every 2 seconds to reflect transport state changes.
 - **Daemon debug logging:** Set `XPORT_LOG_LEVEL=debug` to get per-request logging (method, path, duration, tweet counts, tracebacks). Configured via environment variable in the service template (launchd/systemd). Re-run `install.sh` after changing.
-- **Image download tuning (env vars, all optional):** `XPORT_IMAGE_DELAY_MS` (default 100) sets the inter-request delay for the background image worker. `XPORT_MAX_FILE_MB` (default 50) caps the size of a single image; the worker aborts mid-stream and deletes the `.part` file when exceeded. `XPORT_MAX_MEDIA_MB` (default unset = unlimited) caps the cumulative bytes downloaded per process; further jobs log `skipped:quota`. Bad values fall back to defaults with a stderr warning instead of crashing the daemon.
+- **Media tuning (env vars, all optional):** `XPORT_AUTO_STORE_IMAGES` defaults to true; `XPORT_TRANSCRIBE_COMMAND` configures the local transcription command; `XPORT_TRANSCRIBE_MODEL` defaults to `nvidia/parakeet-tdt-0.6b-v3`; `XPORT_TRANSCRIBE_MAX_DURATION_MS` defaults to `90000`; `XPORT_TRANSCRIBE_MAX_FILE_MB` defaults to `75`; `XPORT_IMAGE_FETCH_MAX_FILE_MB` defaults to `XPORT_MAX_FILE_MB` or `50`.
 
 ## Stealth Constraints
 
 **These are non-negotiable. XPort must remain completely passive.**
 
-1. **Zero extra network requests** — never fetch, POST, or call any X/Twitter endpoint. The extension only reads responses the browser already received.
+1. **Zero extra browser-side X requests** — the extension only reads responses the browser already received. Allowed daemon-side media requests are listed in the carve-outs below.
 2. **Native-looking patches** — `toString()` on patched `fetch` returns `'function fetch() { [native code] }'`. `XHR.open` toString returns the original native string. `fetch.name` is set to `'fetch'` via `Object.defineProperty`.
 3. **No expando properties** — XHR URL tracking uses a `WeakMap`, never attaches properties to instances.
 4. **No DOM footprint** — no injected elements, no visible page modifications. The only transient artifact is the `<meta name="__cfg">` tag, removed within milliseconds by the bridge script.
@@ -88,11 +88,12 @@ Stored XPort captures only; no live X/Twitter requests
 7. **Random event channel** — per-page-load name, meta tag removed immediately after reading.
 8. **Only `open()` patched on XHR** — `send()` is not patched, so non-GraphQL XHR calls have clean stack traces.
 
-**Any change that adds network requests to X/Twitter domains must be rejected.**
+**Any change that adds browser-side network requests to X/Twitter domains must be rejected.**
 
-**Carve-outs (opt-in only, daemon-side, off by default):**
-- **Video download** (`/download-video`) — user-initiated via popup button; calls `pbs.twimg.com` / `video.twimg.com` and runs yt-dlp.
-- **Image download** (`image_download:true` on `/tweets`) — opt-in toggle in popup. The daemon fetches `pbs.twimg.com` photos in a single background worker. Hostname allowlist enforced; redirects blocked; per-file size cap; never enabled by default.
+**Carve-outs (daemon-side only):**
+- **Automatic image asset storage** — after a successful tweet ingest, the daemon fetches captured `pbs.twimg.com` photo URLs in the background and stores binary bytes plus metadata in `tweet_media`. Redirects are blocked and host allowlisting remains mandatory.
+- **Video transcription** (`/transcribe-media`) — user-initiated from popup/debug/CLI; fetches one selected `video.twimg.com` or `pbs.twimg.com` media URL after allowlist validation, runs the configured local transcription command, and stores transcript status/text in `tweet_media`.
+- **Image asset endpoint** (`/fetch-media-image`) — retained for API/CLI compatibility; dashboard UI should rely on automatic image storage instead of exposing a manual image action.
 
 The browser-side capture path stays passive. These carve-outs run on the daemon, not the extension, so the page itself never originates the request.
 
@@ -102,7 +103,6 @@ The browser-side capture path stays passive. These carve-outs run on the daemon,
 XPort/
 ├── extension/                 # Load this directory in Chrome, never the repo root
 │   ├── manifest.json          # Chrome MV3 manifest (permissions: storage, nativeMessaging)
-│   ├── manifest.firefox.json  # Firefox MV3 manifest (generated — do not edit)
 │   ├── background.js          # Service worker (ES module) - transport, parsing, dedup
 │   ├── content-main.js        # MAIN world - fetch/XHR patching
 │   ├── content-bridge.js      # ISOLATED world - event relay
@@ -119,13 +119,12 @@ XPort/
 ├── Dockerfile                 # API container for Coolify
 ├── requirements.txt           # API runtime dependencies
 └── native-host/
-    ├── xport_core.py              # Shared file I/O logic (used by host + daemon)
+    ├── xport_core.py              # Shared daemon helper logic
     ├── xport_host.py              # Native messaging host — token bootstrap only (Python, stdio)
     ├── xport_daemon.py            # HTTP daemon (127.0.0.1:17381)
     ├── com.xport.daemon.plist     # launchd plist template (macOS)
     ├── com.xport.daemon.service   # systemd unit template (Linux)
     ├── com.xport.host.json        # Native messaging host manifest (Chrome)
-    ├── com.xport.host.firefox.json # Native messaging host manifest (Firefox)
     ├── install.sh                # macOS/Linux installer (+ daemon)
     ├── install.ps1               # Windows installer (+ daemon)
     ├── xport_host.bat             # Windows native host wrapper
@@ -144,7 +143,7 @@ Unknown endpoints fall back to a recursive search for `instructions[]` arrays (m
 
 ## Output Schema
 
-Each JSONL line contains:
+PostgreSQL stores normalized columns plus the raw captured tweet JSON. The raw tweet object has this shape:
 
 ```jsonc
 {
@@ -193,7 +192,7 @@ Each JSONL line contains:
 }
 ```
 
-Notes: `media[].duration_ms` only present for videos. `views` may be `null`. For retweets, `text` contains the full original tweet text (not the truncated `RT @user:` form). For articles, `is_article` and `article` are present — `article.text` is a markdown rendering with inline `![](media/<id>/file)` image refs, `article.blocks` preserves the raw Draft.js structure, and `article.media[]` lists images with CDN URLs and local paths. Article tweets bypass dedup so the enriched version (from `TweetResultByRestId`) replaces the stub captured from timeline endpoints. Top-level `media[]` entries deliberately do NOT carry `local_path` — when image download is enabled, photos land at `media/<tweet_id>/<basename(url)>` by convention. Consumers reconstruct the path; the daemon never round-trips it through the JSONL.
+Notes: `media[].duration_ms` only present for videos. `views` may be `null`. For retweets, `text` contains the full original tweet text (not the truncated `RT @user:` form). For articles, `is_article` and `article` are present — `article.text` is a markdown rendering with inline `![](media/<id>/file)` image refs, `article.blocks` preserves the raw Draft.js structure, and `article.media[]` lists images with CDN URLs and local paths. Article tweets bypass dedup so the enriched version (from `TweetResultByRestId`) replaces the stub captured from timeline endpoints. Media-bearing duplicates also bypass dedup once when the previous capture for that tweet ID had no media. Top-level `media[]` entries deliberately do NOT carry `local_path` — when image download is enabled, photos land at `media/<tweet_id>/<basename(url)>` by convention. Consumers reconstruct the path; the daemon never stores it in the tweet payload.
 
 ## Known Issues
 
@@ -210,21 +209,20 @@ X sometimes returns `TimelineTweet` entries where `tweet_results.result` is miss
 ## Development Notes
 
 - **No build step** — plain JS, no bundler, no transpilation. Load and go.
-- **Testing:** `uv run --with pytest --with 'psycopg[binary]==3.2.13' pytest tests/ -v && node --test tests/*.test.mjs`. Run after every change. CI runs these on every push to main with coverage uploaded to Codecov. For manual browser testing, load unpacked in Chrome (`chrome://extensions`) from `extension/`, or as a temporary add-on in Firefox (`about:debugging#/runtime/this-firefox`) using `extension/manifest.firefox.json`. Chrome extension IDs vary per install; Firefox uses the fixed Gecko ID in `extension/manifest.firefox.json`. Use the matching installer mode (`install.sh ... chrome|firefox`, `install.ps1 -Browser chrome|firefox`).
+- **Testing:** `uv run --with pytest --with 'psycopg[binary]==3.2.13' pytest tests/ -v && node --test tests/*.test.mjs`. Run after every change. CI runs these on every push to main with coverage uploaded to Codecov. For manual browser testing, load unpacked in Chrome (`chrome://extensions`) from `extension/`. Chrome extension IDs vary per install; pass the installed ID to `install.sh` or `install.ps1`.
 - **Parser golden test (fast, use for iteration):** `node --test tests/parser-golden.test.mjs` — runs `extractTweets` against all fixture scenarios in `tests/fixtures/sanitized/*/` and compares to golden `expected.jsonl`. Sub-second, reports field-level diffs on failure. Use this as the inner loop when modifying the parser.
-- **E2E test (slow, CI gate):** `cd tests/e2e && npm test` — launches Chromium + real extension + daemon + Fake X server. Auto-discovers all scenarios in `tests/fixtures/sanitized/`. Full pipeline integration proof.
+- **E2E test (slow, CI gate):** `cd tests/e2e && npm test` — launches Chromium + real extension + daemon + Fake X server + fake ingest API. Auto-discovers all scenarios in `tests/fixtures/sanitized/`. Full pipeline integration proof without writing tweet JSONL locally.
 - **Fixtures:** Parser fixture packs live under `tests/fixtures/`. Keep raw captures in `tests/fixtures/private-raw/` only (gitignored) and commit only sanitized packs from `tests/fixtures/sanitized/`. The anonymization methodology and review checklist are documented in `tests/fixtures/FIXTURES.md`.
 - **Adding a fixture from a dump:** Discovery mode auto-dumps the first response per endpoint per session to the output dir as `dump-{endpoint}-{timestamp}.json` (in `{ endpoint, data }` envelope format). Feed directly to the sanitizer: `node tests/fixtures/tools/sanitize.mjs <dump-file> <scenario-name>`. This produces `tests/fixtures/sanitized/<scenario-name>/` with fixture.json, expected.jsonl, and manifest.json. Both parser and E2E tests pick it up automatically.
 - **Workflow for supporting a new endpoint:** (1) Human enables discovery mode and browses X normally — dumps appear automatically for every endpoint, (2) run `node tests/fixtures/tools/sanitize.mjs <dump-file> <scenario-name>`, (3) run `node --test tests/parser-golden.test.mjs` — if it fails, the parser doesn't handle this endpoint yet, (4) fix the parser in `extension/lib/tweet-parser.js`, (5) re-run parser test until green (ms feedback loop), (6) regenerate expected: re-run sanitize.mjs (overwrites).
-- **Debugging:** Enable "Debug logging to file" in the debug dashboard (popup → "Debug Dashboard"). Logs write to `debug-YYYY-MM-DD.log` in the output directory. Service worker console is visible in each browser's extension debugger. The debug dashboard also shows live capture events with accept/dedup/error status, transport health, and a parser sandbox for testing `extractTweets` against raw JSON.
-- **Dev mode seenIds:** In dev mode, `seenIds` uses `chrome.storage.session` when available (volatile — clears on extension reload). If session storage APIs are unavailable, it safely falls back to `chrome.storage.local`.
+- **Debugging:** Enable "Debug logging to file" in the debug dashboard (popup → "Debug Dashboard"). Logs write to `debug-YYYY-MM-DD.log` in the output directory. Service worker console is visible in each browser's extension debugger. The debug dashboard also shows recent stored Postgres tweets, live capture events with accept/dedup/error status, transport health, and a parser sandbox for testing `extractTweets` against raw JSON.
+- **Dev mode dedup state:** In dev mode, `seenIds` and `mediaSeenIds` use `chrome.storage.session` when available (volatile — clears on extension reload). If session storage APIs are unavailable, they safely fall back to `chrome.storage.local`.
 - **tweet-parser.js** is the most fragile file — it handles multiple GraphQL response shapes and X changes their API schema without notice. The recursive fallback (`findInstructionsRecursive`) catches many new endpoint shapes automatically, but field-level changes to tweet objects will need manual updates to `normalizeTweet()`.
 - **Service worker module:** `extension/background.js` is loaded as an ES module (`"type": "module"` in manifest). It imports `tweet-parser.js` directly.
 - **HTTP daemon:** `xport_daemon.py` binds `127.0.0.1:17381`. Auth token stored at `~/.xport/secret` (mode 600). Managed by launchd (macOS: `launchctl kickstart -k gui/$(id -u)/com.xport.daemon`), systemd (Linux: `systemctl --user restart com.xport.daemon`), or Scheduled Task (Windows: `Stop-ScheduledTask -TaskName XPortDaemon; Start-ScheduledTask -TaskName XPortDaemon`). Logs: macOS/Windows at `~/.xport/daemon-stderr.log`, Linux via `journalctl --user -u com.xport.daemon`.
 - **Transport debugging:** The popup shows connection status and auto-refreshes every 2s. When transport is unavailable, the popup and debug dashboard show an actionable error message. Service worker console logs transport selection at startup and reprobe attempts. Daemon startup diagnostics are always logged to `~/.xport/daemon-stderr.log`; set `XPORT_LOG_LEVEL=debug` for request-level detail.
-- **XPort skill CLI:** `skill/xport` is read-only and must stay aligned with the hosted API and `tweets` table. It may read `XPORT_API_URL`/`XPORT_API_TOKEN`/`XPORT_INGEST_TOKEN` or `DATABASE_URL`, but it must never call X/Twitter or fetch missing data live.
-- **Release checklist:** (1) Bump `extension/manifest.json` version, (2) bump `native-host/xport_daemon.py` `VERSION`, (3) run `node scripts/build-firefox-manifest.js` to regenerate `extension/manifest.firefox.json`. The manifest test validates version parity, so CI will catch a forgotten regeneration. (4) If any new files were added to the extension or native-host, **update the file list in `.github/workflows/release.yml`** — the release zip uses an explicit list, not a glob, so new files will be silently missing from releases if not added. (5) Follow the **Release procedure** below to publish.
-- **Firefox manifest:** `extension/manifest.firefox.json` is generated from `extension/manifest.json` — never edit it directly. The generator script (`scripts/build-firefox-manifest.js`) swaps `service_worker` → `scripts` and adds Gecko metadata.
+- **XPort skill CLI:** `skill/xport` must stay aligned with the hosted API plus `tweets`/`tweet_media` tables. Search/get/recent/stats are stored-data reads only. `transcribe` is an explicit daemon-side enrichment carve-out and must only use media URLs already stored in `tweet_media`; photo asset storage is automatic after ingest.
+- **Release checklist:** (1) Bump `extension/manifest.json` version, (2) bump `native-host/xport_daemon.py` `VERSION`, (3) if any new files were added to the extension or native-host, **update the file list in `.github/workflows/release.yml`** — the release zip uses an explicit list, not a glob, so new files will be silently missing from releases if not added. (4) Follow the **Release procedure** below to publish.
 
 ## Release Procedure
 

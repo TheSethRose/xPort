@@ -1,18 +1,19 @@
-"""XPort Core — shared file I/O logic used by both native host and HTTP daemon."""
+"""XPort Core — shared daemon helpers."""
 
-import glob
 import json
 import os
-import queue
-import re
-import shutil
+import base64
+import shlex
 import subprocess
 import sys
 import threading
 import time
+import tempfile
 import urllib.error
+import urllib.parse
 import urllib.request
-from datetime import date, datetime, timezone
+import queue
+from datetime import date
 from urllib.parse import urlparse
 
 
@@ -50,56 +51,14 @@ def validate_output_dir(path):
     )
 
 
-def load_seen_ids(out_dir):
-    """Build a set of tweet IDs from all existing JSONL files in the output directory."""
-    seen = set()
-    for path in glob.glob(os.path.join(out_dir, 'tweets-*.jsonl')):
-        with open(path, 'r') as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    tweet_id = json.loads(line).get('id')
-                    if tweet_id:
-                        seen.add(tweet_id)
-                except (json.JSONDecodeError, KeyError):
-                    continue
-    return seen
-
-
-def resolve_output_dir(msg_dir, default_dir, seen_ids, custom_dirs):
-    """Resolve output directory from message, loading seen IDs for new custom dirs.
-
-    Returns the resolved output directory path.
-    """
+def resolve_output_dir(msg_dir, default_dir):
+    """Resolve the local artifact directory from a request."""
     if msg_dir:
         out_dir = validate_output_dir(os.path.expanduser(msg_dir))
         os.makedirs(out_dir, exist_ok=True)
-        if out_dir != default_dir and out_dir not in custom_dirs:
-            seen_ids.update(load_seen_ids(out_dir))
-            custom_dirs.add(out_dir)
     else:
         out_dir = default_dir
     return out_dir
-
-
-def write_tweets(tweets, out_dir, seen_ids):
-    """Write tweets to JSONL, deduplicating against seen_ids. Returns (count, dupes)."""
-    out_file = os.path.join(out_dir, f'tweets-{date.today().isoformat()}.jsonl')
-    count = 0
-    dupes = 0
-    with open(out_file, 'a') as f:
-        for tweet in tweets:
-            tid = tweet.get('id')
-            if tid and tid in seen_ids and not tweet.get('is_article'):
-                dupes += 1
-                continue
-            if tid:
-                seen_ids.add(tid)
-            f.write(json.dumps(tweet, ensure_ascii=False) + '\n')
-            count += 1
-    return count, dupes
 
 
 def forward_tweets_to_api(tweets, source='xport-daemon'):
@@ -107,7 +66,11 @@ def forward_tweets_to_api(tweets, source='xport-daemon'):
     api_url = DEFAULT_API_URL
     token = DEFAULT_INGEST_TOKEN
     if not api_url or not token:
-        return {'enabled': False}
+        return {
+            'enabled': False,
+            'ok': False,
+            'error': 'XPORT_API_URL and XPORT_INGEST_TOKEN are required for tweet capture',
+        }
     if not isinstance(tweets, list) or not tweets:
         return {'enabled': True, 'ok': True, 'count': 0}
 
@@ -147,6 +110,41 @@ def forward_tweets_to_api(tweets, source='xport-daemon'):
     return {'enabled': True, 'ok': False, 'error': last_error or 'forward failed'}
 
 
+def _api_json(method, path, payload=None, query=None):
+    api_url = DEFAULT_API_URL
+    token = DEFAULT_INGEST_TOKEN
+    if not api_url or not token:
+        raise RuntimeError('XPORT_API_URL and XPORT_INGEST_TOKEN are required')
+    url = f'{api_url}{path}'
+    if query:
+        encoded = urllib.parse.urlencode({k: v for k, v in query.items() if v is not None})
+        if encoded:
+            url = f'{url}?{encoded}'
+    data = None
+    if payload is not None:
+        data = json.dumps(payload, ensure_ascii=False).encode('utf-8')
+    req = urllib.request.Request(url, data=data, method=method)
+    req.add_header('Authorization', f'Bearer {token}')
+    if data is not None:
+        req.add_header('Content-Type', 'application/json')
+    with urllib.request.urlopen(req, timeout=_env_float('XPORT_API_TIMEOUT_SECONDS', 5.0)) as resp:
+        return json.loads(resp.read() or b'{}')
+
+
+def list_stored_tweets_from_api(limit=50, offset=0):
+    """Fetch recent stored tweets from the hosted API, including media rows."""
+    limit = max(1, min(int(limit or 50), 100))
+    offset = max(0, int(offset or 0))
+    result = _api_json('GET', '/api/tweets', query={
+        'limit': limit,
+        'offset': offset,
+        'include_media': 'true',
+    })
+    if result.get('ok') is not True:
+        raise RuntimeError(result.get('error') or 'stored tweet lookup failed')
+    return result.get('tweets') or []
+
+
 def write_log(lines, out_dir):
     """Append debug log lines to daily log file. Returns logged count."""
     log_file = os.path.join(out_dir, f'debug-{date.today().isoformat()}.log')
@@ -182,236 +180,101 @@ def test_path(out_dir):
             pass
 
 
-# --- Video download ---
+# --- Media fetch helpers ---
 
-_ytdlp_path = None
-_ytdlp_checked = False
-_downloads = {}
-_downloads_lock = threading.Lock()
-
-
-def check_ytdlp():  # pragma: no cover
-    """Check if yt-dlp is available on PATH. Cached after first call."""
-    global _ytdlp_path, _ytdlp_checked
-    if not _ytdlp_checked:
-        _ytdlp_path = shutil.which('yt-dlp')
-        _ytdlp_checked = True
-    return _ytdlp_path is not None
-
-
-def get_download_status(download_id):
-    """Return current state of a download."""
-    with _downloads_lock:
-        info = _downloads.get(download_id)
-        if not info:
-            return {'status': 'unknown'}
-        return {
-            'status': info['status'],
-            'progress': info.get('progress'),
-            'path': info.get('path'),
-            'error': info.get('error'),
-        }
-
-
-def _date_prefix(post_date):
-    """Convert ISO date string to yyyy.mm.dd prefix, or empty string on failure."""
-    if not post_date:
-        return ''
-    try:
-        # Handle both "2024-01-15T12:34:56.000Z" and "2024-01-15"
-        dt = post_date[:10].replace('-', '.')
-        return dt + '_'
-    except Exception:
-        return ''
-
-
-def download_direct(direct_url, tweet_id, video_dir, post_date=''):  # pragma: no cover
-    """Download video via direct CDN URL. Returns the file path."""
-    os.makedirs(video_dir, exist_ok=True)
-    prefix = _date_prefix(post_date)
-    filename = f'{prefix}{tweet_id}.mp4'
-    filepath = os.path.join(video_dir, filename)
-    tmp_path = filepath + '.part'
-    urllib.request.urlretrieve(direct_url, tmp_path)
-    os.replace(tmp_path, filepath)
-    return filepath
-
-
-def start_download(download_id, tweet_url, direct_url, out_dir, post_date=''):  # pragma: no cover
-    """Start a background download. Returns immediately; poll get_download_status()."""
-    video_dir = os.path.join(out_dir, 'videos')
-    os.makedirs(video_dir, exist_ok=True)
-
-    with _downloads_lock:
-        _downloads[download_id] = {
-            'status': 'downloading',
-            'progress': None,
-            'path': None,
-            'error': None,
-        }
-
-    def run():
-        try:
-            if check_ytdlp():
-                _download_with_ytdlp(download_id, tweet_url, video_dir, post_date)
-            elif direct_url:
-                with _downloads_lock:
-                    _downloads[download_id]['progress'] = 0
-                # Extract tweet ID from URL
-                m = re.search(r'/status/(\d+)', tweet_url)
-                tweet_id = m.group(1) if m else download_id
-                path = download_direct(direct_url, tweet_id, video_dir, post_date)
-                with _downloads_lock:
-                    _downloads[download_id].update(
-                        progress=100, status='done', path=path)
-            else:
-                with _downloads_lock:
-                    _downloads[download_id].update(
-                        status='error',
-                        error='yt-dlp not found and no direct URL available')
-        except Exception as e:
-            with _downloads_lock:
-                _downloads[download_id].update(
-                    status='error', error=str(e))
-
-    t = threading.Thread(target=run, daemon=True)
-    t.start()
-
-
-class _YtdlpProgress:
-    """Parse yt-dlp stdout and scale progress across multiple HLS streams.
-
-    Call feed(line) for each stripped stdout line.  Read .progress for the
-    current 0-100 value and .final_path for the last detected output path.
-    """
-
-    _progress_re = re.compile(r'(\d+\.?\d*)%')
-    _format_re = re.compile(r'Downloading \d+ format\(s\): (.+)')
-
-    def __init__(self):
-        self.total_streams = 1
-        self.stream_index = 0
-        self.dest_count = 0
-        self.progress = 0.0
-        self.final_path = None
-
-    def feed(self, line: str):
-        # Detect multi-stream downloads by counting '+' in format string
-        # ("Downloading 1 format(s): hls-707+hls-audio" -> 2 streams)
-        if line.startswith('[info]'):
-            fm = self._format_re.search(line)
-            if fm:
-                self.total_streams = max(1, fm.group(1).count('+') + 1)
-
-        # Parse progress percentage, scaled across streams.
-        # Exclude Destination / already-downloaded lines so a tweet title
-        # containing "%" (e.g. "100% agree") doesn't poison progress.
-        if line.startswith('[download]') and 'Destination:' not in line and 'has already been downloaded' not in line:
-            m = self._progress_re.search(line)
-            if m:
-                raw_pct = float(m.group(1))
-                pct = min((self.stream_index * 100 + raw_pct) / self.total_streams, 100.0)
-                # Never report backward progress (safety net if stream
-                # count detection is wrong or yt-dlp format changes)
-                if pct >= self.progress:
-                    self.progress = pct
-
-        # Capture output filename from [download] or [Merger] lines
-        if 'Destination:' in line:
-            self.dest_count += 1
-            if self.dest_count > self.total_streams:
-                # More streams than the format line indicated (or format
-                # line was missing).  Recalibrate so the monotonic guard
-                # doesn't lock progress at 100% for the rest of the download.
-                self.total_streams = self.dest_count
-                self.progress = min(
-                    self.progress,
-                    (self.dest_count - 1) * 100.0 / self.total_streams)
-            self.stream_index = min(self.dest_count - 1, self.total_streams - 1)
-            self.final_path = line.split('Destination:', 1)[1].strip()
-        elif 'has already been downloaded' in line:
-            self.dest_count += 1
-            if self.dest_count > self.total_streams:
-                self.total_streams = self.dest_count
-            self.stream_index = min(self.dest_count - 1, self.total_streams - 1)
-            # Count cached stream as complete for progress
-            pct = min((self.stream_index + 1) * 100.0 / self.total_streams, 100.0)
-            if pct >= self.progress:
-                self.progress = pct
-            # "[download] <path> has already been downloaded"
-            part = line.split(']', 1)[1].strip() if ']' in line else line
-            self.final_path = part.replace(' has already been downloaded', '').strip()
-        elif '[Merger]' in line and 'Merging formats into' in line:
-            self.final_path = line.split('Merging formats into "', 1)[1].rstrip('"').strip() if '"' in line else self.final_path
-
-
-def _download_with_ytdlp(download_id, tweet_url, video_dir, post_date=''):  # pragma: no cover
-    """Download using yt-dlp with progress parsing.
-
-    Downloads into a .downloading/ staging subdirectory so partial files
-    are not visible in video_dir until the download is fully complete.
-    """
-    staging_dir = os.path.join(video_dir, '.downloading')
-    os.makedirs(staging_dir, exist_ok=True)
-    prefix = _date_prefix(post_date)
-    # Pin the tweet status ID in the filename rather than relying on %(id)s,
-    # which some yt-dlp Twitter sub-extractors (amplify/broadcast/card) fill
-    # with a media or broadcast ID instead of the tweet ID.
-    m = re.search(r'/status/(\d+)', tweet_url)
-    id_part = m.group(1) if m else '%(id)s'
-    output_template = os.path.join(staging_dir, prefix + '%(title)s [' + id_part + '].%(ext)s')
-    cmd = [
-        _ytdlp_path,
-        '--newline', '--progress',
-        '--cookies-from-browser', 'chrome',
-        '-o', output_template,
-        tweet_url,
-    ]
-    proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-    )
-    tracker = _YtdlpProgress()
-    last_lines = []
-    for line in proc.stdout:
-        line = line.strip()
-        if line:
-            last_lines.append(line)
-            if len(last_lines) > 20:
-                last_lines.pop(0)
-            print(f'[yt-dlp] {line}', file=sys.stderr)
-        tracker.feed(line)
-        with _downloads_lock:
-            _downloads[download_id]['progress'] = tracker.progress
-    proc.wait()
-    if proc.returncode != 0:
-        # Include yt-dlp's error output in the exception
-        error_lines = [l for l in last_lines if 'ERROR' in l]
-        detail = error_lines[-1] if error_lines else (last_lines[-1] if last_lines else '')
-        raise RuntimeError(f'yt-dlp failed: {detail}' if detail else f'yt-dlp exited with code {proc.returncode}')
-    # Move completed file from staging dir to final video_dir
-    final_path = tracker.final_path
-    if final_path and os.path.isfile(final_path):
-        dest_path = os.path.join(video_dir, os.path.basename(final_path))
-        shutil.move(final_path, dest_path)
-        final_path = dest_path
-    with _downloads_lock:
-        _downloads[download_id].update(
-            progress=100, status='done', path=final_path)
-
-
-# --- Image download ---
-
-# Strip a trailing :orig / :large / :medium etc. suffix Twitter appends to media URLs.
-_TWIMG_SIZE_SUFFIX_RE = re.compile(r':(orig|large|medium|small|thumb|tiny)$')
-
-# Twitter snowflake IDs are numeric; reject anything else to block path traversal.
-_TWEET_ID_RE = re.compile(r'^[0-9]+$')
-
-# Only fetch from these CDN hosts. Anything else (including redirects) is rejected.
 ALLOWED_IMAGE_HOSTS = frozenset({'pbs.twimg.com'})
+ALLOWED_VIDEO_HOSTS = frozenset({'video.twimg.com', 'pbs.twimg.com'})
+USER_AGENT = 'XPort/1.0 (+https://github.com/TheSethRose/xPort)'
+REQUEST_TIMEOUT_S = 30
+CHUNK_SIZE = 64 * 1024
+_image_asset_queue = None
+_image_asset_worker = None
+_image_asset_lock = threading.Lock()
+
+
+def collect_image_asset_jobs(tweets):
+    """Return Postgres media asset jobs for photos in a captured tweet batch."""
+    jobs = []
+    if not isinstance(tweets, list):
+        return jobs
+    for tweet in tweets:
+        if not isinstance(tweet, dict):
+            continue
+        tweet_id = tweet.get('id') or tweet.get('tweet_id')
+        if not tweet_id:
+            continue
+        tweet_id = str(tweet_id)
+        media_items = tweet.get('media') if isinstance(tweet.get('media'), list) else []
+        for index, item in enumerate(media_items):
+            job = _image_asset_job(tweet_id, index, item)
+            if job:
+                jobs.append(job)
+        article = tweet.get('article') if isinstance(tweet.get('article'), dict) else {}
+        article_media = article.get('media') if isinstance(article.get('media'), list) else []
+        for index, item in enumerate(article_media):
+            media_id = f'{tweet_id}:article:{index}'
+            job = _image_asset_job(tweet_id, len(media_items) + index, item, media_id=media_id)
+            if job:
+                jobs.append(job)
+    return jobs
+
+
+def _image_asset_job(tweet_id, index, item, media_id=None):
+    if not isinstance(item, dict):
+        return None
+    media_type = item.get('type') or ('photo' if item.get('url') or item.get('source_url') else None)
+    if media_type != 'photo':
+        return None
+    source_url = item.get('url') or item.get('source_url')
+    if not source_url:
+        return None
+    return {
+        'media_id': str(item.get('media_id') or item.get('id') or media_id or f'{tweet_id}:{index}'),
+        'tweet_id': str(tweet_id),
+        'source_url': source_url,
+    }
+
+
+def enqueue_image_asset_storage(tweets):
+    """Queue automatic photo asset storage. Returns number of queued jobs."""
+    if not _env_bool('XPORT_AUTO_STORE_IMAGES', True):
+        return 0
+    jobs = collect_image_asset_jobs(tweets)
+    if not jobs:
+        return 0
+    worker_queue = _ensure_image_asset_worker()
+    for job in jobs:
+        worker_queue.put(job)
+    return len(jobs)
+
+
+def _ensure_image_asset_worker():
+    global _image_asset_queue, _image_asset_worker
+    with _image_asset_lock:
+        if _image_asset_queue is None:
+            _image_asset_queue = queue.Queue()
+        if _image_asset_worker is None or not _image_asset_worker.is_alive():
+            _image_asset_worker = threading.Thread(
+                target=_image_asset_worker_loop,
+                daemon=True,
+                name='xport-image-assets',
+            )
+            _image_asset_worker.start()
+        return _image_asset_queue
+
+
+def _image_asset_worker_loop():  # pragma: no cover - covered through queue/job helpers
+    while True:
+        job = _image_asset_queue.get()
+        try:
+            fetch_store_image_asset(job['media_id'], job['tweet_id'], job['source_url'])
+        except Exception as e:
+            print(
+                f'[xport:image] auto-store failed for {job.get("media_id")}: {e}',
+                file=sys.stderr,
+            )
+        finally:
+            _image_asset_queue.task_done()
 
 
 def _env_int(name, default):
@@ -437,120 +300,16 @@ def _env_float(name, default):
         return default
 
 
-def _photo_filename(url):
-    """Extract the CDN filename from a pbs.twimg.com photo URL.
-
-    Returns the basename without any trailing :size suffix, or None if the URL
-    has no usable filename or contains traversal components.
-    """
-    if not url:
-        return None
-    cleaned = _TWIMG_SIZE_SUFFIX_RE.sub('', url)
-    path = urlparse(cleaned).path or cleaned
-    name = os.path.basename(path)
-    if not name or name in ('.', '..'):
-        return None
-    # Reject anything with path separators or that would still resolve to a
-    # parent directory after basename (defense in depth).
-    if '/' in name or '\\' in name or name.startswith('.'):
-        return None
-    return name
-
-
-def _is_safe_rel_path(out_dir, rel_path):
-    """Verify joining rel_path with out_dir stays under out_dir.
-
-    Catches absolute paths (`/etc/...`), traversal (`../foo`), and Windows
-    drive-letter paths.
-    """
-    if not rel_path or os.path.isabs(rel_path):
+def _env_bool(name, default):
+    raw = (os.environ.get(name) or '').strip().lower()
+    if not raw:
+        return default
+    if raw in {'1', 'true', 'yes', 'on'}:
+        return True
+    if raw in {'0', 'false', 'no', 'off'}:
         return False
-    out_real = os.path.realpath(out_dir)
-    candidate = os.path.realpath(os.path.join(out_real, rel_path))
-    try:
-        return os.path.commonpath([out_real, candidate]) == out_real
-    except ValueError:  # pragma: no cover — Windows-only: different drives
-        return False
-
-
-def collect_image_jobs(tweets, out_dir):
-    """Compute the list of image download jobs for a batch of tweets.
-
-    For top-level photo media the rel_path is derived by convention
-    (`media/<tweet_id>/<cdn_filename>`) — the JSONL never carries a
-    redundant `local_path` field for these. Consumers who need the path
-    can reconstruct it from `id` + `basename(url)`.
-
-    Article media items (under `tweet.article.media[]`) already have
-    `local_path` set by the JS parser because that path is also embedded
-    in the article's rendered Markdown text (`![](media/<id>/file.png)`).
-    Those entries are validated here but not mutated; if the supplied
-    `local_path` would escape `out_dir`, the field is stripped so the
-    unsafe path never lands in the JSONL.
-
-    Path components are validated against `out_dir`: tweet IDs must match
-    [0-9]+, filenames must be plain basenames, and the final resolved
-    path must stay under `out_dir`. Anything that fails validation is
-    skipped.
-
-    Returns: list of {tweet_id, url, rel_path} ready for the downloader.
-    """
-    pending = []
-    for tweet in tweets:
-        tweet_id = tweet.get('id')
-        if not tweet_id or not isinstance(tweet_id, str) or not _TWEET_ID_RE.match(tweet_id):
-            continue
-
-        # Top-level photo media (regular tweets) — derived path, no mutation.
-        for item in tweet.get('media') or []:
-            if not isinstance(item, dict) or item.get('type') != 'photo':
-                continue
-            url = item.get('url')
-            filename = _photo_filename(url)
-            if not filename:
-                continue
-            rel_path = f'media/{tweet_id}/{filename}'
-            if not _is_safe_rel_path(out_dir, rel_path):
-                continue
-            pending.append({'tweet_id': tweet_id, 'url': url, 'rel_path': rel_path})
-
-        # Article media — local_path crosses the trust boundary in the
-        # request body, so re-validate it here.
-        article = tweet.get('article') or {}
-        for item in article.get('media') or []:
-            if not isinstance(item, dict):
-                continue
-            url = item.get('url')
-            rel_path = item.get('local_path')
-            if not url or not isinstance(rel_path, str):
-                continue
-            if not _is_safe_rel_path(out_dir, rel_path):
-                # Strip the unsafe path so it doesn't end up in the JSONL.
-                item.pop('local_path', None)
-                continue
-            pending.append({'tweet_id': tweet_id, 'url': url, 'rel_path': rel_path})
-
-    return pending
-
-
-_image_downloader = None
-_image_downloader_lock = threading.Lock()
-
-
-def get_image_downloader():
-    """Lazily construct the singleton ImageDownloader."""
-    global _image_downloader
-    with _image_downloader_lock:
-        if _image_downloader is None:
-            _image_downloader = ImageDownloader()
-        return _image_downloader
-
-
-def reset_image_downloader():
-    """Reset the singleton (test-only — leaks the previous worker thread)."""
-    global _image_downloader
-    with _image_downloader_lock:
-        _image_downloader = None
+    print(f'[xport:image] invalid {name}={raw!r}, using {default}', file=sys.stderr)
+    return default
 
 
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -563,183 +322,250 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
 _NO_REDIRECT_OPENER = urllib.request.build_opener(_NoRedirectHandler())
 
 
-class ImageDownloader:
-    """Single background-thread image downloader with hardened HTTP fetch.
+# --- On-demand transcription ---
 
-    - One worker, one queue. Per-job cost is small so a single thread is fine
-      and avoids hammering the CDN.
-    - Idempotent: if the destination file already exists, skip the network call
-      and log status='exists'.
-    - URL hostname is checked against ALLOWED_IMAGE_HOSTS before every request.
-      Redirects are blocked entirely (so an attacker can't 302 us off-allowlist).
-    - Per-file size cap (XPORT_MAX_FILE_MB, default 50) bounds disk impact even
-      for adversarial responses. Optional cumulative cap via XPORT_MAX_MEDIA_MB.
-    - 429 responses trigger exponential backoff (capped at MAX_BACKOFF_S).
-      Other HTTP errors and network failures log status='error'.
+TRANSCRIPTION_MODEL = os.environ.get('XPORT_TRANSCRIBE_MODEL', 'nvidia/parakeet-tdt-0.6b-v3')
+TRANSCRIBE_MAX_DURATION_MS = _env_int('XPORT_TRANSCRIBE_MAX_DURATION_MS', 90_000)
+TRANSCRIBE_MAX_FILE_MB = _env_int('XPORT_TRANSCRIBE_MAX_FILE_MB', 75)
+TRANSCRIBE_REQUEST_TIMEOUT_S = _env_float('XPORT_TRANSCRIBE_REQUEST_TIMEOUT_SECONDS', 60.0)
+TRANSCRIBE_COMMAND = os.environ.get('XPORT_TRANSCRIBE_COMMAND', '').strip()
+
+_transcriptions = {}
+_transcriptions_lock = threading.Lock()
+_active_transcription_id = None
+
+
+def get_transcription_status(media_id):
+    with _transcriptions_lock:
+        info = _transcriptions.get(media_id)
+        if not info:
+            return {'status': 'unknown'}
+        return dict(info)
+
+
+def start_media_transcription(media_id, tweet_id, source_url, duration_ms=None):
+    """Start an explicit, user-triggered media transcription job.
+
+    The passive capture path never calls this. The media URL is fetched only
+    after this function is invoked by the daemon endpoint/UI/CLI path.
     """
-
-    DEFAULT_DELAY_MS = 100
-    DEFAULT_MAX_FILE_MB = 50
-    USER_AGENT = 'XPort/1.0 (+https://github.com/TheSethRose/xPort)'
-    MAX_BACKOFF_S = 30
-    REQUEST_TIMEOUT_S = 30
-    CHUNK_SIZE = 64 * 1024
-
-    def __init__(self):
-        self.queue = queue.Queue()
-        self.delay_s = max(0.0, _env_int('XPORT_IMAGE_DELAY_MS', self.DEFAULT_DELAY_MS) / 1000.0)
-        max_total_mb = _env_float('XPORT_MAX_MEDIA_MB', 0.0)
-        self.max_bytes = int(max_total_mb * 1024 * 1024) if max_total_mb > 0 else None
-        max_file_mb = _env_float('XPORT_MAX_FILE_MB', float(self.DEFAULT_MAX_FILE_MB))
-        self.max_file_bytes = int(max_file_mb * 1024 * 1024) if max_file_mb > 0 else None
-        self._bytes_lock = threading.Lock()
-        self.bytes_downloaded = 0
-        self._last_request_at = 0.0
-        self._thread = threading.Thread(target=self._run, daemon=True, name='xport-image-downloader')
-        self._thread.start()
-
-    def enqueue(self, jobs, out_dir):
-        """Enqueue a batch of pending downloads against the given output dir."""
-        for job in jobs:
-            self.queue.put((job, out_dir))
-
-    def _run(self):
-        while True:
-            try:
-                job, out_dir = self.queue.get()
-            except Exception:  # pragma: no cover — only fires at interpreter shutdown
-                continue
-            try:
-                self._process(job, out_dir)
-            except Exception as e:  # pragma: no cover — defensive
-                print(f'[xport:image] worker exception: {e}', file=sys.stderr)
-            finally:
-                self.queue.task_done()
-
-    def _process(self, job, out_dir):
-        tweet_id = job['tweet_id']
-        url = job['url']
-        rel_path = job['rel_path']
-
-        # Re-validate the rel_path defensively: enqueue() is exported and a
-        # future caller could skip inject_image_local_paths.
-        if not _is_safe_rel_path(out_dir, rel_path):
-            self._log(out_dir, tweet_id, url, rel_path, 'error:unsafe_path', 0)
-            return
-
-        dest_path = os.path.join(out_dir, rel_path)
-
-        if os.path.exists(dest_path):
-            self._log(out_dir, tweet_id, url, dest_path, 'exists', os.path.getsize(dest_path))
-            return
-
-        if not _is_allowed_url(url):
-            self._log(out_dir, tweet_id, url, dest_path, 'error:host_not_allowed', 0)
-            return
-
-        if self.max_bytes is not None:
-            with self._bytes_lock:
-                over_quota = self.bytes_downloaded >= self.max_bytes
-            if over_quota:
-                self._log(out_dir, tweet_id, url, dest_path, 'skipped:quota', 0)
-                return
-
-        # Simple rate limiter: enforce delay_s between requests.
-        if self.delay_s > 0:
-            wait = self.delay_s - (time.monotonic() - self._last_request_at)
-            if wait > 0:
-                time.sleep(wait)
-
-        size, err = self._download(url, dest_path)
-        self._last_request_at = time.monotonic()
-
-        if err:
-            self._log(out_dir, tweet_id, url, dest_path, f'error:{err}', 0)
-            return
-
-        with self._bytes_lock:
-            self.bytes_downloaded += size
-        self._log(out_dir, tweet_id, url, dest_path, 'ok', size)
-
-    def _download(self, url, dest_path):
-        """Download to a .part file and rename atomically. Returns (bytes, error)."""
-        os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-        tmp_path = dest_path + '.part'
-        backoff = 1.0
-        attempts = 0
-        while True:
-            attempts += 1
-            req = urllib.request.Request(url, headers={'User-Agent': self.USER_AGENT})
-            try:
-                with _NO_REDIRECT_OPENER.open(req, timeout=self.REQUEST_TIMEOUT_S) as resp:
-                    # Reject up-front when Content-Length advertises an oversize body.
-                    if self.max_file_bytes is not None:
-                        cl = resp.headers.get('Content-Length')
-                        if cl and cl.isdigit() and int(cl) > self.max_file_bytes:
-                            return 0, 'too_large'
-                    written = 0
-                    with open(tmp_path, 'wb') as f:
-                        while True:
-                            chunk = resp.read(self.CHUNK_SIZE)
-                            if not chunk:
-                                break
-                            written += len(chunk)
-                            if self.max_file_bytes is not None and written > self.max_file_bytes:
-                                _safe_unlink(tmp_path)
-                                return 0, 'too_large'
-                            f.write(chunk)
-                size = os.path.getsize(tmp_path)
-                os.replace(tmp_path, dest_path)
-                return size, None
-            except urllib.error.HTTPError as e:
-                _safe_unlink(tmp_path)
-                if e.code == 429 and backoff <= self.MAX_BACKOFF_S and attempts < 4:
-                    time.sleep(backoff)
-                    backoff *= 2
-                    continue
-                return 0, f'http_{e.code}'
-            except (urllib.error.URLError, OSError, TimeoutError) as e:
-                _safe_unlink(tmp_path)
-                return 0, type(e).__name__
-
-    def _log(self, out_dir, tweet_id, url, dest_path, status, size):
+    global _active_transcription_id
+    media_id = str(media_id or '').strip()
+    tweet_id = str(tweet_id or '').strip()
+    if not media_id:
+        raise ValueError('media_id is required')
+    if not tweet_id:
+        raise ValueError('tweet_id is required')
+    if not source_url:
+        raise ValueError('source_url is required')
+    if duration_ms is not None:
         try:
-            local_path = os.path.relpath(dest_path, out_dir)
-        except ValueError:  # pragma: no cover — Windows-only: different drives
-            local_path = dest_path
-        entry = {
-            'timestamp': datetime.now(timezone.utc).isoformat(),
-            'tweet_id': tweet_id,
-            'url': url,
-            'local_path': local_path,
-            'status': status,
-            'bytes': size,
-        }
-        manifest_path = os.path.join(out_dir, 'media-manifest.jsonl')
+            duration_ms = int(duration_ms)
+        except (TypeError, ValueError):
+            duration_ms = None
+    if not _is_allowed_media_url(source_url, ALLOWED_VIDEO_HOSTS):
+        raise ValueError('source_url host is not allowed')
+    if duration_ms is not None and duration_ms > TRANSCRIBE_MAX_DURATION_MS:
+        update_media_transcription_api(
+            media_id,
+            'skipped',
+            error=f'duration exceeds {TRANSCRIBE_MAX_DURATION_MS}ms cap',
+        )
+        with _transcriptions_lock:
+            _transcriptions[media_id] = {'status': 'skipped', 'error': f'duration exceeds {TRANSCRIBE_MAX_DURATION_MS}ms cap'}
+        return {'ok': True, 'media_id': media_id, 'status': 'skipped'}
+
+    with _transcriptions_lock:
+        if _active_transcription_id:
+            return {
+                'ok': False,
+                'error': f'transcription already running: {_active_transcription_id}',
+                'status': 'busy',
+            }
+        _active_transcription_id = media_id
+        _transcriptions[media_id] = {'status': 'queued', 'error': None}
+
+    update_media_transcription_api(media_id, 'queued')
+    thread = threading.Thread(
+        target=_run_media_transcription,
+        args=(media_id, tweet_id, source_url),
+        daemon=True,
+        name=f'xport-transcribe-{media_id}',
+    )
+    thread.start()
+    return {'ok': True, 'media_id': media_id, 'status': 'queued'}
+
+
+def _run_media_transcription(media_id, tweet_id, source_url):  # pragma: no cover - integration-tested with fakes
+    global _active_transcription_id
+    try:
+        _set_transcription_status(media_id, 'transcribing')
+        update_media_transcription_api(media_id, 'transcribing')
+        if not TRANSCRIBE_COMMAND:
+            raise RuntimeError('XPORT_TRANSCRIBE_COMMAND is not configured')
+        max_bytes = max(1, TRANSCRIBE_MAX_FILE_MB) * 1024 * 1024
+        with tempfile.TemporaryDirectory(prefix='xport-transcribe-') as tmpdir:
+            media_path, byte_size = _download_temp_media(source_url, tmpdir, max_bytes)
+            transcript = _run_transcription_command(media_path)
+        _set_transcription_status(media_id, 'done', byte_size=byte_size)
+        update_media_transcription_api(
+            media_id,
+            'done',
+            transcript_text=transcript,
+            transcript_model=TRANSCRIPTION_MODEL,
+        )
+    except Exception as e:
+        _set_transcription_status(media_id, 'error', error=str(e))
         try:
-            os.makedirs(out_dir, exist_ok=True)
-            with open(manifest_path, 'a') as f:
-                f.write(json.dumps(entry, ensure_ascii=False) + '\n')
-        except OSError as e:
-            print(f'[xport:image] manifest write failed: {e}', file=sys.stderr)
+            update_media_transcription_api(media_id, 'error', error=str(e), transcript_model=TRANSCRIPTION_MODEL)
+        except Exception as update_error:
+            _set_transcription_status(media_id, 'error', error=f'{e}; status update failed: {update_error}')
+    finally:
+        with _transcriptions_lock:
+            if _active_transcription_id == media_id:
+                _active_transcription_id = None
 
 
-def _is_allowed_url(url):
-    """True iff url is https and the hostname is in ALLOWED_IMAGE_HOSTS."""
+def _set_transcription_status(media_id, status, error=None, byte_size=None):
+    with _transcriptions_lock:
+        existing = _transcriptions.get(media_id, {})
+        existing.update(status=status, error=error)
+        if byte_size is not None:
+            existing['byte_size'] = byte_size
+        _transcriptions[media_id] = existing
+
+
+def _download_temp_media(url, tmpdir, max_bytes):
+    parsed = urlparse(url)
+    suffix = os.path.splitext(parsed.path)[1] or '.media'
+    dest_path = os.path.join(tmpdir, 'source' + suffix)
+    req = urllib.request.Request(url, headers={'User-Agent': USER_AGENT})
+    written = 0
+    with _NO_REDIRECT_OPENER.open(req, timeout=TRANSCRIBE_REQUEST_TIMEOUT_S) as resp:
+        cl = resp.headers.get('Content-Length')
+        if cl and cl.isdigit() and int(cl) > max_bytes:
+            raise RuntimeError('media file exceeds size cap')
+        with open(dest_path, 'wb') as f:
+            while True:
+                chunk = resp.read(CHUNK_SIZE)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > max_bytes:
+                    raise RuntimeError('media file exceeds size cap')
+                f.write(chunk)
+    return dest_path, written
+
+
+def _run_transcription_command(media_path):
+    if '{input}' in TRANSCRIBE_COMMAND:
+        cmd = shlex.split(TRANSCRIBE_COMMAND.format(input=media_path))
+    else:
+        cmd = shlex.split(TRANSCRIBE_COMMAND) + [media_path]
+    proc = subprocess.run(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=_env_float('XPORT_TRANSCRIBE_COMMAND_TIMEOUT_SECONDS', 300.0),
+        check=False,
+    )
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or '').strip()
+        raise RuntimeError(f'transcription command failed: {detail}' if detail else f'transcription command exited {proc.returncode}')
+    transcript = proc.stdout.strip()
+    if not transcript:
+        raise RuntimeError('transcription command returned empty transcript')
+    return transcript
+
+
+def update_media_transcription_api(media_id, status, transcript_text=None, transcript_model=None, error=None):
+    api_url = DEFAULT_API_URL
+    token = DEFAULT_INGEST_TOKEN
+    if not api_url or not token:
+        raise RuntimeError('XPORT_API_URL and XPORT_INGEST_TOKEN are required for media transcription status updates')
+    endpoint = f'{api_url}/api/media/{urllib.parse.quote(str(media_id), safe="")}/transcription'
+    payload = {
+        'status': status,
+        'transcript_text': transcript_text,
+        'transcript_model': transcript_model,
+        'transcript_error': error,
+    }
+    body = json.dumps({k: v for k, v in payload.items() if v is not None}, ensure_ascii=False).encode('utf-8')
+    req = urllib.request.Request(endpoint, data=body, method='POST')
+    req.add_header('Content-Type', 'application/json')
+    req.add_header('Authorization', f'Bearer {token}')
+    with urllib.request.urlopen(req, timeout=_env_float('XPORT_API_TIMEOUT_SECONDS', 5.0)) as resp:
+        result = json.loads(resp.read() or b'{}')
+    if result.get('ok') is not True:
+        raise RuntimeError(result.get('error') or 'media transcription update failed')
+    return result
+
+
+def fetch_store_image_asset(media_id, tweet_id, source_url):
+    """Explicitly fetch one image and store it in the API as binary asset bytes."""
+    media_id = str(media_id or '').strip()
+    tweet_id = str(tweet_id or '').strip()
+    if not media_id:
+        raise ValueError('media_id is required')
+    if not tweet_id:
+        raise ValueError('tweet_id is required')
+    if not _is_allowed_media_url(source_url, ALLOWED_IMAGE_HOSTS):
+        raise ValueError('source_url host is not allowed')
+    max_file_mb = _env_float('XPORT_IMAGE_FETCH_MAX_FILE_MB', _env_float('XPORT_MAX_FILE_MB', 50.0))
+    max_bytes = int(max_file_mb * 1024 * 1024) if max_file_mb > 0 else 50 * 1024 * 1024
+    req = urllib.request.Request(source_url, headers={'User-Agent': USER_AGENT})
+    chunks = []
+    written = 0
+    mime_type = 'application/octet-stream'
+    with _NO_REDIRECT_OPENER.open(req, timeout=REQUEST_TIMEOUT_S) as resp:
+        content_type = resp.headers.get('Content-Type')
+        if content_type:
+            mime_type = content_type.split(';', 1)[0].strip().lower()
+        if not mime_type.startswith('image/'):
+            raise RuntimeError(f'unexpected media type: {mime_type}')
+        cl = resp.headers.get('Content-Length')
+        if cl and cl.isdigit() and int(cl) > max_bytes:
+            raise RuntimeError('image file exceeds size cap')
+        while True:
+            chunk = resp.read(CHUNK_SIZE)
+            if not chunk:
+                break
+            written += len(chunk)
+            if written > max_bytes:
+                raise RuntimeError('image file exceeds size cap')
+            chunks.append(chunk)
+    update_media_asset_api(media_id, b''.join(chunks), mime_type)
+    return {'ok': True, 'media_id': media_id, 'tweet_id': tweet_id, 'asset_byte_size': written, 'asset_mime_type': mime_type}
+
+
+def update_media_asset_api(media_id, raw_bytes, mime_type):
+    api_url = DEFAULT_API_URL
+    token = DEFAULT_INGEST_TOKEN
+    if not api_url or not token:
+        raise RuntimeError('XPORT_API_URL and XPORT_INGEST_TOKEN are required for media asset storage')
+    endpoint = f'{api_url}/api/media/{urllib.parse.quote(str(media_id), safe="")}/asset'
+    body = json.dumps({
+        'mime_type': mime_type,
+        'data_base64': base64.b64encode(raw_bytes).decode('ascii'),
+    }).encode('utf-8')
+    req = urllib.request.Request(endpoint, data=body, method='POST')
+    req.add_header('Content-Type', 'application/json')
+    req.add_header('Authorization', f'Bearer {token}')
+    with urllib.request.urlopen(req, timeout=_env_float('XPORT_API_TIMEOUT_SECONDS', 5.0)) as resp:
+        result = json.loads(resp.read() or b'{}')
+    if result.get('ok') is not True:
+        raise RuntimeError(result.get('error') or 'media asset update failed')
+    return result
+
+
+def _is_allowed_media_url(url, allowed_hosts):
     if not url or not isinstance(url, str):
         return False
     try:
         parsed = urlparse(url)
-    except ValueError:  # pragma: no cover — urlparse rarely raises in practice
+    except ValueError:
         return False
     if parsed.scheme != 'https':
         return False
-    host = (parsed.hostname or '').lower()
-    return host in ALLOWED_IMAGE_HOSTS
-
-
-def _safe_unlink(path):
-    try:
-        os.unlink(path)
-    except OSError:
-        pass
+    return (parsed.hostname or '').lower() in allowed_hosts

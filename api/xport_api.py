@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """XPort ingestion API for storing captured tweets in PostgreSQL."""
 
+import base64
+import hashlib
 import hmac
 import json
 import os
@@ -54,10 +56,38 @@ create table if not exists ingest_batches (
   raw jsonb
 );
 
+create table if not exists tweet_media (
+  media_id text primary key,
+  tweet_id text not null references tweets(tweet_id) on delete cascade,
+  media_index integer not null default 0,
+  media_type text not null,
+  source_url text,
+  alt_text text,
+  duration_ms integer,
+  width integer,
+  height integer,
+  transcript_text text,
+  transcript_model text,
+  transcript_status text not null default 'not_requested',
+  transcript_error text,
+  transcribed_at timestamptz,
+  asset_status text not null default 'not_requested',
+  asset_mime_type text,
+  asset_byte_size integer,
+  content_sha256 text,
+  asset_bytes bytea,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique(tweet_id, media_index)
+);
+
 create index if not exists tweets_created_at_idx on tweets (created_at desc);
 create index if not exists tweets_captured_at_idx on tweets (captured_at desc);
 create index if not exists tweets_author_username_idx on tweets (lower(author_username));
 create index if not exists tweets_raw_gin_idx on tweets using gin (raw);
+create index if not exists tweet_media_tweet_id_idx on tweet_media (tweet_id);
+create index if not exists tweet_media_type_idx on tweet_media (media_type);
+create index if not exists tweet_media_transcript_status_idx on tweet_media (transcript_status);
 """
 
 
@@ -119,6 +149,41 @@ on conflict (tweet_id) do update set
   bookmark_count = excluded.bookmark_count,
   view_count = excluded.view_count,
   raw = excluded.raw,
+  updated_at = now()
+"""
+
+
+UPSERT_MEDIA_SQL = """
+insert into tweet_media (
+  media_id,
+  tweet_id,
+  media_index,
+  media_type,
+  source_url,
+  alt_text,
+  duration_ms,
+  width,
+  height
+) values (
+  %(media_id)s,
+  %(tweet_id)s,
+  %(media_index)s,
+  %(media_type)s,
+  %(source_url)s,
+  %(alt_text)s,
+  %(duration_ms)s,
+  %(width)s,
+  %(height)s
+)
+on conflict (media_id) do update set
+  tweet_id = excluded.tweet_id,
+  media_index = excluded.media_index,
+  media_type = excluded.media_type,
+  source_url = excluded.source_url,
+  alt_text = excluded.alt_text,
+  duration_ms = excluded.duration_ms,
+  width = excluded.width,
+  height = excluded.height,
   updated_at = now()
 """
 
@@ -185,6 +250,48 @@ def normalize_tweet(tweet):
     }
 
 
+def normalize_media(tweet):
+    if not isinstance(tweet, dict):
+        return []
+    tweet_id = tweet.get('id') or tweet.get('tweet_id')
+    if not tweet_id:
+        return []
+    rows = []
+    media_items = tweet.get('media') if isinstance(tweet.get('media'), list) else []
+    for idx, item in enumerate(media_items):
+        row = _media_row(str(tweet_id), idx, item)
+        if row:
+            rows.append(row)
+
+    article = tweet.get('article') if isinstance(tweet.get('article'), dict) else {}
+    article_media = article.get('media') if isinstance(article.get('media'), list) else []
+    for idx, item in enumerate(article_media, start=len(rows)):
+        row = _media_row(str(tweet_id), idx, item, media_id=f'{tweet_id}:article:{idx - len(media_items)}')
+        if row:
+            rows.append(row)
+    return rows
+
+
+def _media_row(tweet_id, index, item, media_id=None):
+    if not isinstance(item, dict):
+        return None
+    media_type = item.get('type') or ('photo' if item.get('url') else None)
+    if not media_type:
+        return None
+    media_id = item.get('media_id') or item.get('id') or media_id or f'{tweet_id}:{index}'
+    return {
+        'media_id': str(media_id),
+        'tweet_id': str(tweet_id),
+        'media_index': index,
+        'media_type': str(media_type),
+        'source_url': _str_or_none(item.get('url') or item.get('source_url')),
+        'alt_text': _str_or_none(item.get('alt_text')),
+        'duration_ms': _as_int(item.get('duration_ms')),
+        'width': _as_int(item.get('width')),
+        'height': _as_int(item.get('height')),
+    }
+
+
 def _str_or_none(value):
     if value is None:
         return None
@@ -206,7 +313,14 @@ def ingest_tweets(payload):
     tweets = payload.get('tweets') if isinstance(payload, dict) else None
     if not isinstance(tweets, list):
         raise ValueError('tweets must be an array')
-    rows = [row for row in (normalize_tweet(tweet) for tweet in tweets) if row]
+    normalized = []
+    media_rows = []
+    for tweet in tweets:
+        row = normalize_tweet(tweet)
+        if not row:
+            continue
+        normalized.append(row)
+        media_rows.extend(normalize_media(tweet))
     batch_id = str(uuid4())
     source = payload.get('source') if isinstance(payload.get('source'), str) else 'xport'
 
@@ -216,12 +330,20 @@ def ingest_tweets(payload):
             insert into ingest_batches (batch_id, source, tweet_count, raw)
             values (%s, %s, %s, %s)
             """,
-            (batch_id, source, len(rows), Jsonb(payload)),
+            (batch_id, source, len(normalized), Jsonb(payload)),
         )
-        if rows:
+        if normalized:
             with conn.cursor() as cur:
-                cur.executemany(UPSERT_TWEET_SQL, rows)
-    return {'ok': True, 'batch_id': batch_id, 'received': len(tweets), 'upserted': len(rows)}
+                cur.executemany(UPSERT_TWEET_SQL, normalized)
+                if media_rows:
+                    cur.executemany(UPSERT_MEDIA_SQL, media_rows)
+    return {
+        'ok': True,
+        'batch_id': batch_id,
+        'received': len(tweets),
+        'upserted': len(normalized),
+        'media_upserted': len(media_rows),
+    }
 
 
 def _bool_param(value):
@@ -270,7 +392,17 @@ def _row_to_json(row):
     return out
 
 
-def list_tweets(query=None, author=None, since=None, until=None, endpoint=None, limit=50, offset=0, include_raw=False):
+def list_tweets(
+    query=None,
+    author=None,
+    since=None,
+    until=None,
+    endpoint=None,
+    limit=50,
+    offset=0,
+    include_raw=False,
+    include_media=False,
+):
     clauses = []
     params = []
     if query:
@@ -301,16 +433,172 @@ def list_tweets(query=None, author=None, since=None, until=None, endpoint=None, 
     params.extend([limit, offset])
     with connect() as conn:
         rows = conn.execute(sql, params).fetchall()
-    return [_row_to_json(row) for row in rows]
+        tweets = [_row_to_json(row) for row in rows]
+        if include_media and tweets:
+            _attach_media(conn, tweets)
+    return tweets
 
 
-def get_tweet(tweet_id, include_raw=False):
+def get_tweet(tweet_id, include_raw=False, include_media=False):
     with connect() as conn:
         row = conn.execute(
             f"select {_tweet_projection(include_raw)} from tweets where tweet_id = %s",
             (tweet_id,),
         ).fetchone()
+        if not row:
+            return None
+        tweet = _row_to_json(row)
+        if include_media:
+            tweet['media'] = [_row_to_json(media) for media in _media_rows(conn, tweet_id)]
+    return tweet
+
+
+def _media_projection(include_bytes=False):
+    fields = [
+        'media_id',
+        'tweet_id',
+        'media_index',
+        'media_type',
+        'source_url',
+        'alt_text',
+        'duration_ms',
+        'width',
+        'height',
+        'transcript_text',
+        'transcript_model',
+        'transcript_status',
+        'transcript_error',
+        'transcribed_at',
+        'asset_status',
+        'asset_mime_type',
+        'asset_byte_size',
+        'content_sha256',
+        'created_at',
+        'updated_at',
+    ]
+    if include_bytes:
+        fields.append('asset_bytes')
+    return ', '.join(fields)
+
+
+def _media_rows(conn, tweet_id):
+    return conn.execute(
+        f"""
+        select {_media_projection()}
+        from tweet_media
+        where tweet_id = %s
+        order by media_index asc, created_at asc
+        """,
+        (tweet_id,),
+    ).fetchall()
+
+
+def _attach_media(conn, tweets):
+    tweet_ids = [tweet['tweet_id'] for tweet in tweets]
+    rows = conn.execute(
+        f"""
+        select {_media_projection()}
+        from tweet_media
+        where tweet_id = any(%s)
+        order by tweet_id, media_index asc, created_at asc
+        """,
+        (tweet_ids,),
+    ).fetchall()
+    by_tweet = {tweet_id: [] for tweet_id in tweet_ids}
+    for row in rows:
+        by_tweet.setdefault(row['tweet_id'], []).append(_row_to_json(row))
+    for tweet in tweets:
+        tweet['media'] = by_tweet.get(tweet['tweet_id'], [])
+
+
+def list_media(tweet_id):
+    with connect() as conn:
+        exists = conn.execute('select 1 from tweets where tweet_id = %s', (tweet_id,)).fetchone()
+        if not exists:
+            return None
+        return [_row_to_json(row) for row in _media_rows(conn, tweet_id)]
+
+
+def get_media(media_id, include_bytes=False):
+    with connect() as conn:
+        row = conn.execute(
+            f"select {_media_projection(include_bytes)} from tweet_media where media_id = %s",
+            (media_id,),
+        ).fetchone()
     return _row_to_json(row) if row else None
+
+
+def update_media_transcription(media_id, payload):
+    status = _str_or_none(payload.get('status')) or 'queued'
+    if status not in {'queued', 'transcribing', 'done', 'skipped', 'error', 'not_requested'}:
+        raise ValueError('invalid transcription status')
+    transcript_text = payload.get('transcript_text')
+    model = payload.get('transcript_model')
+    error = payload.get('transcript_error') or payload.get('error')
+    completed = status in {'done', 'skipped', 'error'}
+    with connect() as conn:
+        row = conn.execute(
+            """
+            update tweet_media
+            set transcript_status = %s,
+                transcript_text = coalesce(%s, transcript_text),
+                transcript_model = coalesce(%s, transcript_model),
+                transcript_error = %s,
+                transcribed_at = case when %s then now() else transcribed_at end,
+                updated_at = now()
+            where media_id = %s
+            returning media_id
+            """,
+            (status, transcript_text, model, error, completed, media_id),
+        ).fetchone()
+    return row is not None
+
+
+def store_media_asset(media_id, payload):
+    data = payload.get('data_base64') or payload.get('data')
+    mime_type = _str_or_none(payload.get('mime_type') or payload.get('asset_mime_type'))
+    if not data or not isinstance(data, str):
+        raise ValueError('data_base64 is required')
+    if not mime_type:
+        raise ValueError('mime_type is required')
+    try:
+        raw = base64.b64decode(data, validate=True)
+    except Exception as e:
+        raise ValueError(f'invalid base64: {e}') from e
+    sha = hashlib.sha256(raw).hexdigest()
+    with connect() as conn:
+        row = conn.execute(
+            """
+            update tweet_media
+            set asset_status = 'stored',
+                asset_mime_type = %s,
+                asset_byte_size = %s,
+                content_sha256 = %s,
+                asset_bytes = %s,
+                updated_at = now()
+            where media_id = %s
+            returning media_id
+            """,
+            (mime_type, len(raw), sha, raw, media_id),
+        ).fetchone()
+    return row is not None
+
+
+def media_content(media_id, data_url=False):
+    media = get_media(media_id, include_bytes=True)
+    if not media:
+        return None
+    raw = media.pop('asset_bytes', None)
+    if raw is None:
+        return {'media': media, 'data_url': None}
+    if isinstance(raw, memoryview):
+        raw = raw.tobytes()
+    elif not isinstance(raw, bytes):
+        raw = bytes(raw)
+    if data_url:
+        mime_type = media.get('asset_mime_type') or 'application/octet-stream'
+        media['data_url'] = f'data:{mime_type};base64,{base64.b64encode(raw).decode("ascii")}'
+    return {'media': media, 'data_url': media.pop('data_url', None)}
 
 
 def tweet_stats():
@@ -351,8 +639,21 @@ class ApiHandler(BaseHTTPRequestHandler):
             self._handle_list_tweets(parsed.query)
             return
         if parsed.path.startswith('/api/tweets/'):
-            tweet_id = unquote(parsed.path.removeprefix('/api/tweets/'))
-            self._handle_get_tweet(tweet_id, parsed.query)
+            suffix = parsed.path.removeprefix('/api/tweets/')
+            if suffix.endswith('/media'):
+                tweet_id = unquote(suffix[:-len('/media')])
+                self._handle_list_media(tweet_id)
+            else:
+                tweet_id = unquote(suffix)
+                self._handle_get_tweet(tweet_id, parsed.query)
+            return
+        if parsed.path.startswith('/api/media/'):
+            suffix = parsed.path.removeprefix('/api/media/')
+            if suffix.endswith('/content'):
+                media_id = unquote(suffix[:-len('/content')])
+                self._handle_media_content(media_id, parsed.query)
+            else:
+                self._handle_get_media(unquote(suffix))
             return
         if parsed.path == '/api/stats':
             self._handle_stats()
@@ -383,6 +684,7 @@ class ApiHandler(BaseHTTPRequestHandler):
                 limit=_bounded_int(value('limit'), 50, 1, 500),
                 offset=_bounded_int(value('offset'), 0, 0, 100000),
                 include_raw=_bool_param(value('include_raw')),
+                include_media=_bool_param(value('include_media')),
             )
             _json_response(self, 200, {'ok': True, 'tweets': tweets})
         except Exception as e:
@@ -391,7 +693,11 @@ class ApiHandler(BaseHTTPRequestHandler):
     def _handle_get_tweet(self, tweet_id, raw_query):
         params = parse_qs(raw_query, keep_blank_values=False)
         try:
-            tweet = get_tweet(tweet_id, include_raw=_bool_param(params.get('include_raw', [None])[0]))
+            tweet = get_tweet(
+                tweet_id,
+                include_raw=_bool_param(params.get('include_raw', [None])[0]),
+                include_media=_bool_param(params.get('include_media', [None])[0]),
+            )
         except Exception as e:
             _json_response(self, 500, {'ok': False, 'error': str(e)})
             return
@@ -399,6 +705,43 @@ class ApiHandler(BaseHTTPRequestHandler):
             _json_response(self, 404, {'ok': False, 'error': 'Tweet not found'})
             return
         _json_response(self, 200, {'ok': True, 'tweet': tweet})
+
+    def _handle_list_media(self, tweet_id):
+        try:
+            media = list_media(tweet_id)
+        except Exception as e:
+            _json_response(self, 500, {'ok': False, 'error': str(e)})
+            return
+        if media is None:
+            _json_response(self, 404, {'ok': False, 'error': 'Tweet not found'})
+            return
+        _json_response(self, 200, {'ok': True, 'media': media})
+
+    def _handle_get_media(self, media_id):
+        try:
+            media = get_media(media_id)
+        except Exception as e:
+            _json_response(self, 500, {'ok': False, 'error': str(e)})
+            return
+        if not media:
+            _json_response(self, 404, {'ok': False, 'error': 'Media not found'})
+            return
+        _json_response(self, 200, {'ok': True, 'media': media})
+
+    def _handle_media_content(self, media_id, raw_query):
+        params = parse_qs(raw_query, keep_blank_values=False)
+        try:
+            result = media_content(media_id, data_url=_bool_param(params.get('data_url', [None])[0]))
+        except Exception as e:
+            _json_response(self, 500, {'ok': False, 'error': str(e)})
+            return
+        if result is None:
+            _json_response(self, 404, {'ok': False, 'error': 'Media not found'})
+            return
+        if not result.get('data_url'):
+            _json_response(self, 404, {'ok': False, 'error': 'Media asset not stored'})
+            return
+        _json_response(self, 200, {'ok': True, **result})
 
     def _handle_stats(self):
         try:
@@ -408,39 +751,56 @@ class ApiHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urlparse(self.path)
-        if parsed.path != '/api/ingest/tweets':
-            _json_response(self, 404, {'ok': False, 'error': 'Not found'})
-            return
-
         if not self._authorize():
             return
 
+        payload = self._read_json_body()
+        if payload is None:
+            return
+
+        try:
+            if parsed.path == '/api/ingest/tweets':
+                result = ingest_tweets(payload)
+                _json_response(self, 200, result)
+                return
+            if parsed.path.startswith('/api/media/') and parsed.path.endswith('/transcription'):
+                media_id = unquote(parsed.path.removeprefix('/api/media/')[:-len('/transcription')])
+                if not update_media_transcription(media_id, payload):
+                    _json_response(self, 404, {'ok': False, 'error': 'Media not found'})
+                    return
+                _json_response(self, 200, {'ok': True, 'media_id': media_id})
+                return
+            if parsed.path.startswith('/api/media/') and parsed.path.endswith('/asset'):
+                media_id = unquote(parsed.path.removeprefix('/api/media/')[:-len('/asset')])
+                if not store_media_asset(media_id, payload):
+                    _json_response(self, 404, {'ok': False, 'error': 'Media not found'})
+                    return
+                _json_response(self, 200, {'ok': True, 'media_id': media_id})
+                return
+            _json_response(self, 404, {'ok': False, 'error': 'Not found'})
+        except ValueError as e:
+            _json_response(self, 400, {'ok': False, 'error': str(e)})
+        except Exception as e:
+            _json_response(self, 500, {'ok': False, 'error': str(e)})
+
+    def _read_json_body(self):
         raw_length = self.headers.get('Content-Length')
         try:
             length = int(raw_length or '')
         except ValueError:
             _json_response(self, 400, {'ok': False, 'error': 'Invalid Content-Length'})
-            return
+            return None
         if length < 0:
             _json_response(self, 400, {'ok': False, 'error': 'Content-Length must not be negative'})
-            return
+            return None
         if length > MAX_BODY_SIZE:
             _json_response(self, 413, {'ok': False, 'error': 'Payload too large'})
-            return
-
+            return None
         try:
-            payload = json.loads(self.rfile.read(length) or b'{}')
+            return json.loads(self.rfile.read(length) or b'{}')
         except json.JSONDecodeError as e:
             _json_response(self, 400, {'ok': False, 'error': f'Invalid JSON: {e}'})
-            return
-
-        try:
-            result = ingest_tweets(payload)
-            _json_response(self, 200, result)
-        except ValueError as e:
-            _json_response(self, 400, {'ok': False, 'error': str(e)})
-        except Exception as e:
-            _json_response(self, 500, {'ok': False, 'error': str(e)})
+            return None
 
 
 def main():

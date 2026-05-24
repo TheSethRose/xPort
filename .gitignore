@@ -16,3 +16,7 @@ tests/fixtures/private-raw/*
 tests/e2e/.extension-out/
 tests/e2e/certs/*
 !tests/e2e/certs/test-extension.pem
+
+
+#Ignore cursor AI rules
+.cursor/rules/codacy.mdc

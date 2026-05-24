@@ -75,6 +75,39 @@ h2 {
   color: #e7e9ea;
 }
 
+.tweet-table .small-btn {
+  margin-right: 6px;
+  margin-bottom: 4px;
+}
+
+.tweet-author {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  color: #e7e9ea;
+  margin-bottom: 3px;
+}
+
+.tweet-text {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 12px;
+  line-height: 1.35;
+  color: #cfd9de;
+  max-width: 420px;
+  white-space: normal;
+}
+
+.tweet-table a {
+  display: inline-block;
+  margin-top: 5px;
+  color: #1d9bf0;
+  text-decoration: none;
+}
+
+.tweet-table a:hover {
+  text-decoration: underline;
+}
+
 /* Health table */
 .health-table {
   width: 100%;

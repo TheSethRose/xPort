@@ -44,6 +44,33 @@ def test_normalize_tweet_skips_invalid_tweet(api_module):
     assert api_module.normalize_tweet('nope') is None
 
 
+def test_normalize_media_maps_top_level_and_article_media(api_module):
+    rows = api_module.normalize_media({
+        'id': '123',
+        'media': [{
+            'type': 'video',
+            'url': 'https://video.twimg.com/ext_tw_video/123/pu/vid/720x720/a.mp4',
+            'duration_ms': 12000,
+            'width': 720,
+            'height': 720,
+        }],
+        'article': {
+            'media': [{
+                'url': 'https://pbs.twimg.com/media/a.jpg',
+                'width': '1200',
+                'height': '800',
+            }],
+        },
+    })
+
+    assert rows[0]['media_id'] == '123:0'
+    assert rows[0]['media_type'] == 'video'
+    assert rows[0]['duration_ms'] == 12000
+    assert rows[1]['media_id'] == '123:article:0'
+    assert rows[1]['media_type'] == 'photo'
+    assert rows[1]['width'] == 1200
+
+
 @pytest.fixture()
 def api_url(api_module, monkeypatch):
     captured = []
@@ -61,8 +88,12 @@ def api_url(api_module, monkeypatch):
 
 
 def _post(base_url, body, token=None):
+    return _post_path(base_url, '/api/ingest/tweets', body, token=token)
+
+
+def _post_path(base_url, path, body, token=None):
     data = json.dumps(body).encode('utf-8')
-    req = urllib.request.Request(f'{base_url}/api/ingest/tweets', data=data, method='POST')
+    req = urllib.request.Request(f'{base_url}{path}', data=data, method='POST')
     req.add_header('Content-Type', 'application/json')
     if token:
         req.add_header('Authorization', f'Bearer {token}')
@@ -133,15 +164,59 @@ def test_list_tweets_accepts_filters(api_module, monkeypatch, api_url):
         'limit': 5,
         'offset': 0,
         'include_raw': True,
+        'include_media': False,
     }]
 
 
 def test_get_tweet_returns_404_for_missing_row(api_module, monkeypatch, api_url):
     base_url, _ = api_url
-    monkeypatch.setattr(api_module, 'get_tweet', lambda tweet_id, include_raw=False: None)
+    monkeypatch.setattr(api_module, 'get_tweet', lambda tweet_id, include_raw=False, include_media=False: None)
     status, body = _get(base_url, '/api/tweets/404?include_raw=true', token='test-ingest-token')
     assert status == 404
     assert body['error'] == 'Tweet not found'
+
+
+def test_get_tweet_accepts_include_media(api_module, monkeypatch, api_url):
+    base_url, _ = api_url
+    captured = []
+
+    def fake_get_tweet(tweet_id, include_raw=False, include_media=False):
+        captured.append((tweet_id, include_raw, include_media))
+        return {'tweet_id': tweet_id, 'media': [] if include_media else None}
+
+    monkeypatch.setattr(api_module, 'get_tweet', fake_get_tweet)
+    status, body = _get(base_url, '/api/tweets/123?include_media=true', token='test-ingest-token')
+    assert status == 200
+    assert body['tweet']['tweet_id'] == '123'
+    assert captured == [('123', False, True)]
+
+
+def test_list_media_endpoint(api_module, monkeypatch, api_url):
+    base_url, _ = api_url
+    monkeypatch.setattr(api_module, 'list_media', lambda tweet_id: [{'media_id': f'{tweet_id}:0'}])
+    status, body = _get(base_url, '/api/tweets/123/media', token='test-ingest-token')
+    assert status == 200
+    assert body == {'ok': True, 'media': [{'media_id': '123:0'}]}
+
+
+def test_transcription_update_endpoint(api_module, monkeypatch, api_url):
+    base_url, _ = api_url
+    captured = []
+
+    def fake_update(media_id, payload):
+        captured.append((media_id, payload))
+        return True
+
+    monkeypatch.setattr(api_module, 'update_media_transcription', fake_update)
+    status, body = _post_path(
+        base_url,
+        '/api/media/123%3A0/transcription',
+        {'status': 'done', 'transcript_text': 'hello'},
+        token='test-ingest-token',
+    )
+    assert status == 200
+    assert body == {'ok': True, 'media_id': '123:0'}
+    assert captured == [('123:0', {'status': 'done', 'transcript_text': 'hello'})]
 
 
 def test_stats_returns_database_summary(api_module, monkeypatch, api_url):

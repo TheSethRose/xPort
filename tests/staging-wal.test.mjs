@@ -26,6 +26,8 @@ const testSource = bgSource
       set buffer(v) { buffer = v; },
       get seenIds() { return seenIds; },
       set seenIds(v) { seenIds = v; },
+      get mediaSeenIds() { return mediaSeenIds; },
+      set mediaSeenIds(v) { mediaSeenIds = v; },
       get traceEvents() { return traceEvents; },
       MAX_BUFFER_SIZE,
     };`
@@ -190,6 +192,28 @@ describe('recoverStagedPayloads', () => {
     assert.equal(env.buffer[0].id, '2');
   });
 
+  it('dedup: enqueues a seen tweet once when recovered data adds media', async () => {
+    const env = setup({
+      extractTweets: (_ep, data) => data?.tweets || [],
+    });
+
+    env.seenIds = new Set(['1']);
+
+    await env.stagePayload('TweetDetail', {
+      tweets: [{
+        id: '1',
+        text: 'same tweet with media',
+        media: [{ type: 'video', url: 'https://video.twimg.com/ext.mp4' }],
+      }],
+    });
+
+    await env.recoverStagedPayloads();
+
+    assert.equal(env.buffer.length, 1);
+    assert.equal(env.buffer[0].id, '1');
+    assert.ok(env.mediaSeenIds.has('1'));
+  });
+
   it('discards entries older than 24h', async () => {
     const env = setup({
       extractTweets: (_ep, data) => data?.tweets || [],
@@ -258,11 +282,13 @@ describe('saveState / restoreState buffer persistence', () => {
 
     env.buffer = [{ id: '1', text: 'buffered' }, { id: '2', text: 'also buffered' }];
     env.seenIds = new Set(['1', '2', '3']);
+    env.mediaSeenIds = new Set(['1', '3']);
 
     await env.saveState();
 
     env.buffer = [];
     env.seenIds = new Set();
+    env.mediaSeenIds = new Set();
 
     await env.restoreState();
 
@@ -272,6 +298,8 @@ describe('saveState / restoreState buffer persistence', () => {
     assert.ok(env.seenIds.has('1'));
     assert.ok(env.seenIds.has('2'));
     assert.ok(env.seenIds.has('3'));
+    assert.ok(env.mediaSeenIds.has('1'));
+    assert.ok(env.mediaSeenIds.has('3'));
   });
 
   it('returns false on storage error (coupled write)', async () => {

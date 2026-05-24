@@ -34,6 +34,24 @@
     </section>
 
     <section class="panel">
+      <h2>Stored Tweets</h2>
+      <div class="events-wrap">
+        <table class="events-table tweet-table">
+          <thead>
+            <tr>
+              <th>Tweet</th>
+              <th>Media</th>
+              <th>Source</th>
+              <th>Captured</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="tweets-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel">
       <h2>
         Capture Events
         <span class="panel-actions">
@@ -41,13 +59,13 @@
           <button id="clear-events" class="small-btn">Clear</button>
         </span>
       </h2>
-      <div class="events-wrap">
+      <div class="events-wrap" id="events-wrap">
         <table class="events-table">
           <thead>
             <tr>
               <th>Time</th>
               <th>Endpoint</th>
-              <th>Tweet ID</th>
+              <th>Tweet</th>
               <th>Status</th>
               <th>Reason</th>
             </tr>

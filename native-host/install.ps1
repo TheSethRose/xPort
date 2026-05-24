@@ -1,15 +1,11 @@
 # XPort — Windows installer for the native messaging host (PowerShell).
 # Usage:
-#   .\install.ps1 -ExtensionId <id> [-Browser chrome|firefox]
-#   .\install.ps1 -Browser firefox
+#   .\install.ps1 -ExtensionId <chrome-extension-id>
 
 param(
     [Parameter(Mandatory=$false, Position=0)]
     [string]$ExtensionId,
 
-    [Parameter(Mandatory=$false)]
-    [ValidateSet("chrome", "firefox")]
-    [string]$Browser = "chrome"
 )
 
 $ErrorActionPreference = "Stop"
@@ -20,19 +16,12 @@ $HostPy = Join-Path $ScriptDir "xport_host.py"
 $BatPath = Join-Path $ScriptDir "xport_host.bat"
 $ManifestPath = Join-Path $ScriptDir "$HostName.json"
 
-if (-not $ExtensionId -and $Browser -eq "firefox") {
-    $ExtensionId = "xport@sethrose.dev"
-}
 if (-not $ExtensionId) {
     Write-Error "ExtensionId is required for Chrome installs (find it at chrome://extensions)."
     exit 1
 }
 
-$RegKey = if ($Browser -eq "firefox") {
-    "HKCU:\Software\Mozilla\NativeMessagingHosts\$HostName"
-} else {
-    "HKCU:\Software\Google\Chrome\NativeMessagingHosts\$HostName"
-}
+$RegKey = "HKCU:\Software\Google\Chrome\NativeMessagingHosts\$HostName"
 
 # Verify python
 if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
@@ -43,14 +32,10 @@ if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
 # Write manifest (path must point to the .bat wrapper)
 $manifestData = @{
     name = $HostName
-    description = "XPort native messaging host -- writes captured tweets to JSONL"
+    description = "XPort native messaging host -- bootstraps the local daemon token"
     path = $BatPath
     type = "stdio"
-}
-if ($Browser -eq "firefox") {
-    $manifestData.allowed_extensions = @($ExtensionId)
-} else {
-    $manifestData.allowed_origins = @("chrome-extension://$ExtensionId/")
+    allowed_origins = @("chrome-extension://$ExtensionId/")
 }
 $manifest = $manifestData | ConvertTo-Json -Depth 2
 
@@ -66,7 +51,6 @@ Set-ItemProperty -Path $RegKey -Name "(Default)" -Value $ManifestPath
 Write-Host "Installed native messaging host:"
 Write-Host "  Manifest: $ManifestPath"
 Write-Host "  Registry: $RegKey"
-Write-Host "  Browser: $Browser"
 Write-Host "  Host script: $HostPy"
 Write-Host "  Extension ID: $ExtensionId"
 
@@ -98,13 +82,27 @@ if ($PythonW) {
     $PythonExe = (Get-Command python).Source
 }
 
+function ConvertTo-PSLiteral([string]$Value) {
+    return "'" + ($Value -replace "'", "''") + "'"
+}
+
+$XportLogLevel = if ($env:XPORT_LOG_LEVEL) { $env:XPORT_LOG_LEVEL } else { "info" }
+$XportApiUrl = if ($env:XPORT_API_URL) { $env:XPORT_API_URL } else { "" }
+$XportIngestToken = if ($env:XPORT_INGEST_TOKEN) { $env:XPORT_INGEST_TOKEN } else { "" }
+
 # Remove existing scheduled task if present
 if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
 }
 
 # Create scheduled task: run at logon, restart on failure
-$Action = New-ScheduledTaskAction -Execute $PythonExe -Argument "`"$DaemonPy`""
+$DaemonCommand = @(
+    "`$env:XPORT_LOG_LEVEL=$(ConvertTo-PSLiteral $XportLogLevel)",
+    "`$env:XPORT_API_URL=$(ConvertTo-PSLiteral $XportApiUrl)",
+    "`$env:XPORT_INGEST_TOKEN=$(ConvertTo-PSLiteral $XportIngestToken)",
+    "& $(ConvertTo-PSLiteral $PythonExe) $(ConvertTo-PSLiteral $DaemonPy)"
+) -join "; "
+$Action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command $DaemonCommand"
 $Trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 $Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
     -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval ([TimeSpan]::FromMinutes(1))
@@ -128,5 +126,9 @@ Write-Host "  Stop-ScheduledTask -TaskName $TaskName"
 
 Write-Host ""
 $outputDir = if ($env:XPORT_OUTPUT_DIR) { $env:XPORT_OUTPUT_DIR } else { Join-Path $HOME "Downloads\xport" }
-Write-Host "Output directory (set XPORT_OUTPUT_DIR to change):"
+Write-Host "Media/debug directory (set XPORT_OUTPUT_DIR to change):"
 Write-Host "  $outputDir"
+if (-not $XportApiUrl -or -not $XportIngestToken) {
+    Write-Host ""
+    Write-Host "Warning: tweet capture requires XPORT_API_URL and XPORT_INGEST_TOKEN."
+}

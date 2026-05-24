@@ -19,7 +19,6 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           zip -r "xport-${VERSION}.zip" \
             extension/manifest.json \
-            extension/manifest.firefox.json \
             extension/background.js \
             extension/content-main.js \
             extension/content-bridge.js \
@@ -31,7 +30,6 @@ jobs:
             native-host/xport_host.py \
             native-host/xport_daemon.py \
             native-host/com.xport.host.json \
-            native-host/com.xport.host.firefox.json \
             native-host/com.xport.daemon.plist \
             native-host/com.xport.daemon.service \
             native-host/install.sh \

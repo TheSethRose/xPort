@@ -1,15 +1,15 @@
 #!/usr/bin/env node
 /**
- * golden-jsonl-test.js — End-to-end golden-path JSONL assertion.
+ * golden-jsonl-test.js — End-to-end golden-path ingest assertion.
  *
  * Runs the full XPort pipeline offline:
- *   Fake X (HTTPS) → real extension → HTTP daemon → JSONL on disk
+ *   Fake X (HTTPS) → real extension → HTTP daemon → fake ingest API
  *
  * Note: Playwright's bundled Chromium does not support native messaging, so
  * the test injects the daemon HTTP token directly into chrome.storage.local.
  * The extension's reprobeTransport() storage fallback picks it up.
  *
- * Then compares the JSONL output against the expected.jsonl golden files
+ * Then compares the ingested tweet payload against the expected.jsonl golden files
  * from all discovered fixture scenarios in tests/fixtures/sanitized/.
  *
  * Usage:
@@ -23,9 +23,9 @@
 
 import { chromium } from 'playwright';
 import { fork, execSync } from 'node:child_process';
+import { createServer } from 'node:http';
 import {
-  mkdtempSync, mkdirSync, rmSync, existsSync,
-  readFileSync, readdirSync,
+  mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, readdirSync,
 } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -37,6 +37,7 @@ const EXTENSION_ID = 'mhljdmpppgbddpoijmhjnaaondpidjfn';
 const SANITIZED_DIR = join(__dirname, '..', 'fixtures', 'sanitized');
 const BOOTSTRAP = join(__dirname, 'native-host-bootstrap.js');
 const E2E_DAEMON_PORT = 17382;
+const E2E_INGEST_TOKEN = 'e2e-ingest-token';
 
 // Discover all fixture scenarios
 const scenarios = readdirSync(SANITIZED_DIR, { withFileTypes: true })
@@ -119,31 +120,65 @@ function startFakeX(fxPort, fixtureDir) {
   });
 }
 
+function startFakeIngestApi(token) {
+  const received = [];
+
+  const server = createServer((req, res) => {
+    if (req.method !== 'POST' || req.url !== '/api/ingest/tweets') {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'not found' }));
+      return;
+    }
+    if (req.headers.authorization !== `Bearer ${token}`) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'unauthorized' }));
+      return;
+    }
+
+    let raw = '';
+    req.setEncoding('utf8');
+    req.on('data', chunk => { raw += chunk; });
+    req.on('end', () => {
+      try {
+        const payload = JSON.parse(raw || '{}');
+        const tweets = Array.isArray(payload.tweets) ? payload.tweets : [];
+        received.push(...tweets);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          ok: true,
+          batch_id: `e2e-${received.length}`,
+          received: tweets.length,
+          upserted: tweets.length,
+        }));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: e.message }));
+      }
+    });
+  });
+
+  return new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const { port } = server.address();
+      resolve({
+        url: `http://127.0.0.1:${port}`,
+        received,
+        close: () => new Promise(done => server.close(done)),
+      });
+    });
+  });
+}
+
 /**
- * Poll a directory for a tweets-*.jsonl file with at least `minLines` records.
- * Returns the array of parsed tweet objects, or null on timeout.
+ * Poll the fake ingest API buffer for at least `minRecords` records.
  */
-async function pollForJsonl(dir, minLines, timeoutMs = 60_000) {
+async function pollForIngest(received, minRecords, timeoutMs = 60_000) {
   const t0 = Date.now();
   while (Date.now() - t0 < timeoutMs) {
-    if (existsSync(dir)) {
-      const files = readdirSync(dir).filter(
-        f => f.startsWith('tweets-') && f.endsWith('.jsonl'),
-      );
-      for (const f of files) {
-        try {
-          const content = readFileSync(join(dir, f), 'utf8').trim();
-          if (!content) continue;
-          const lines = content.split('\n');
-          if (lines.length >= minLines) {
-            const parsed = lines.map(l => JSON.parse(l));
-            log(`Found ${lines.length} records in ${f}`);
-            return parsed;
-          }
-        } catch {
-          // Partial write — daemon still flushing, retry next poll
-        }
-      }
+    if (received.length >= minRecords) {
+      log(`Fake ingest API received ${received.length} records`);
+      return [...received];
     }
     await sleep(1_000);
   }
@@ -213,7 +248,7 @@ function compareJsonl(actual, expected) {
 // ---------------------------------------------------------------------------
 
 async function run() {
-  // 1. Create an isolated output directory under $HOME (passes daemon validation)
+  // 1. Create an isolated artifact directory under $HOME (passes daemon validation)
   mkdirSync(join(homedir(), '.xport'), { recursive: true });
   const outputDir = mkdtempSync(join(homedir(), '.xport', 'e2e-output-'));
   log(`Output dir: ${outputDir}`);
@@ -225,11 +260,17 @@ async function run() {
   let fakeX;
   let userDataDir;
   let context;
+  let ingestApi;
   let passed = false;
   try {
-    // 2. Tell the daemon to use our output dir and E2E port, then bootstrap
+    // 2. Start fake ingest API, then tell the daemon to use it.
+    ingestApi = await startFakeIngestApi(E2E_INGEST_TOKEN);
+
     process.env.XPORT_OUTPUT_DIR = outputDir;
     process.env.XPORT_DAEMON_PORT = String(E2E_DAEMON_PORT);
+    process.env.XPORT_API_URL = ingestApi.url;
+    process.env.XPORT_INGEST_TOKEN = E2E_INGEST_TOKEN;
+    process.env.XPORT_AUTO_STORE_IMAGES = 'false';
     log('Running native-host bootstrap...');
     bootstrapRan = true;  // set before --setup so teardown runs on partial failure
     execSync(`node "${BOOTSTRAP}" --setup`, { stdio: 'inherit' });
@@ -318,16 +359,14 @@ async function run() {
       }
       log('Extension captured GraphQL response');
 
-      // Poll for JSONL output (flush timer is ~30-45 s)
+      // Poll for API ingest (flush timer is ~30-45 s)
       const expectedCount = cumulativeTweets + scenario.manifest.tweet_count;
-      log(`Waiting for ${expectedCount} cumulative tweets in JSONL output (up to 60 s)...`);
+      log(`Waiting for ${expectedCount} cumulative tweets in fake ingest API (up to 60 s)...`);
 
-      const actual = await pollForJsonl(outputDir, expectedCount, 60_000);
+      const actual = await pollForIngest(ingestApi.received, expectedCount, 60_000);
       if (!actual) {
-        const contents = existsSync(outputDir) ? readdirSync(outputDir) : [];
         throw new Error(
-          `[${scenario.name}] No JSONL with ${expectedCount}+ records after 60 s. ` +
-          `Output dir: [${contents.join(', ')}]`,
+          `[${scenario.name}] Fake ingest API did not receive ${expectedCount}+ records after 60 s.`,
         );
       }
 
@@ -339,7 +378,7 @@ async function run() {
 
       const result = compareJsonl(scenarioActual, expected);
       if (!result.pass) {
-        throw new Error(`[${scenario.name}] Golden JSONL mismatch: ${result.message}`);
+        throw new Error(`[${scenario.name}] Golden ingest mismatch: ${result.message}`);
       }
 
       log(`PASS ${scenario.name} — ${scenarioActual.length} tweets match golden output`);
@@ -357,6 +396,7 @@ async function run() {
     // Cleanup — each step is guarded so later cleanup runs even if earlier fails
     if (context) await context.close().catch(() => {});
     if (fakeX) fakeX.kill('SIGTERM');
+    if (ingestApi) await ingestApi.close().catch(() => {});
 
     if (bootstrapRan) {
       log('Tearing down native host...');

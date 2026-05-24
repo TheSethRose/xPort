@@ -5,20 +5,25 @@ const alltimeEl = document.getElementById('alltime-count');
 const toggleBtn = document.getElementById('toggle');
 const outputDirInput = document.getElementById('output-dir');
 const saveDirBtn = document.getElementById('save-dir');
-const imageDownloadCheckbox = document.getElementById('image-download');
 const videoSection = document.getElementById('video-section');
 const videoLabel = document.getElementById('video-label');
-const ytdlpHint = document.getElementById('ytdlp-hint');
-const downloadBtn = document.getElementById('download-btn');
+const transcribeBtn = document.getElementById('transcribe-btn');
 
 function render(state) {
   sessionEl.textContent = state.sessionCount.toLocaleString();
   alltimeEl.textContent = state.allTimeCount.toLocaleString();
 
   if (state.connected) {
-    statusEl.textContent = 'Saving to disk';
-    statusEl.className = 'status connected';
-    transportErrorEl.style.display = 'none';
+    if (state.ingestError) {
+      statusEl.textContent = 'Postgres error';
+      statusEl.className = 'status disconnected';
+      transportErrorEl.textContent = state.ingestError;
+      transportErrorEl.style.display = '';
+    } else {
+      statusEl.textContent = 'Saving to Postgres';
+      statusEl.className = 'status connected';
+      transportErrorEl.style.display = 'none';
+    }
   } else {
     statusEl.textContent = 'Not connected';
     statusEl.className = 'status disconnected';
@@ -40,8 +45,6 @@ function render(state) {
     outputDirInput.value = state.outputDir;
   }
 
-  imageDownloadCheckbox.checked = !!state.imageDownload;
-
   currentTransport = state.transport;
 }
 
@@ -57,13 +60,6 @@ function refresh() {
 toggleBtn.addEventListener('click', () => {
   chrome.runtime.sendMessage({ type: 'TOGGLE_CAPTURE' }, (response) => {
     if (response) refresh();
-  });
-});
-
-imageDownloadCheckbox.addEventListener('change', () => {
-  chrome.runtime.sendMessage({
-    type: 'SET_IMAGE_DOWNLOAD',
-    imageDownload: imageDownloadCheckbox.checked,
   });
 });
 
@@ -86,14 +82,15 @@ saveDirBtn.addEventListener('click', () => {
   });
 });
 
-// --- Video download (HTTP daemon only) ---
+// --- On-demand video transcription (HTTP daemon only) ---
 
 let pollTimer = null;
 let currentTransport = null;
 let videoChecked = false;
+let currentVideo = null;
 
 function checkForVideo() {
-  // Video download requires the HTTP daemon
+  // Transcription requires the HTTP daemon
   if (currentTransport !== 'http') return;
   // Only check once per popup open
   if (videoChecked) return;
@@ -109,7 +106,6 @@ function checkForVideo() {
     chrome.runtime.sendMessage({ type: 'CHECK_VIDEO', tweetId }, (resp) => {
       if (!resp || !resp.hasVideo) return;
 
-      // Show video section
       const typeLabel = resp.mediaType === 'animated_gif' ? 'GIF' : 'Video';
       let duration = '';
       if (resp.durationMs) {
@@ -120,86 +116,104 @@ function checkForVideo() {
       }
       videoLabel.textContent = `${typeLabel} detected${duration}`;
       videoSection.style.display = '';
+      currentVideo = resp;
+      setTranscribeState(resp.transcriptStatus || 'not_requested');
 
-      // Resume polling if there's an active download for this tweet
-      if (resp.activeDownloadId) {
-        downloadBtn.textContent = 'Downloading...';
-        downloadBtn.className = 'download-btn downloading';
-        downloadBtn.disabled = true;
-        pollDownload(resp.activeDownloadId);
-        return;
+      if (resp.transcriptStatus === 'queued' || resp.transcriptStatus === 'transcribing') {
+        pollTranscription(resp.mediaId);
       }
-
-      // Check yt-dlp availability
-      chrome.runtime.sendMessage({ type: 'CHECK_YTDLP' }, (ytResp) => {
-        const hasYtdlp = ytResp && ytResp.ok && ytResp.available;
-        if (hasYtdlp) {
-          downloadBtn.textContent = 'Download Video';
-        } else {
-          ytdlpHint.style.display = '';
-          downloadBtn.textContent = 'Download MP4';
-        }
-
-        downloadBtn.onclick = () => startDownload(tweetId, resp.tweetUrl, resp.directUrl, resp.postDate);
-      });
     });
   });
 }
 
-function startDownload(tweetId, tweetUrl, directUrl, postDate) {
-  downloadBtn.disabled = true;
-  downloadBtn.textContent = 'Starting...';
-  downloadBtn.className = 'download-btn downloading';
+transcribeBtn.addEventListener('click', () => {
+  if (!currentVideo) return;
+  startTranscription(currentVideo);
+});
+
+function startTranscription(video) {
+  transcribeBtn.disabled = true;
+  transcribeBtn.textContent = 'Queued';
+  transcribeBtn.className = 'download-btn downloading';
 
   chrome.runtime.sendMessage({
-    type: 'DOWNLOAD_VIDEO',
-    tweetId,
-    tweetUrl,
-    directUrl,
-    postDate,
+    type: 'TRANSCRIBE_MEDIA',
+    mediaId: video.mediaId,
+    tweetId: video.tweetUrl?.match(/\/status\/(\d+)/)?.[1],
+    sourceUrl: video.sourceUrl,
+    durationMs: video.durationMs,
   }, (resp) => {
     if (!resp || !resp.ok) {
-      showDownloadResult('error', resp?.error || 'Download failed');
+      showTranscriptionResult('error', resp?.error || 'Transcription failed');
       return;
     }
-    pollDownload(resp.downloadId);
+    setTranscribeState(resp.status || 'queued');
+    pollTranscription(video.mediaId);
   });
 }
 
-function pollDownload(downloadId) {
+function pollTranscription(mediaId) {
+  if (pollTimer) clearInterval(pollTimer);
   pollTimer = setInterval(() => {
     chrome.runtime.sendMessage({
-      type: 'DOWNLOAD_STATUS',
-      downloadId,
+      type: 'TRANSCRIPTION_STATUS',
+      mediaId,
     }, (resp) => {
       if (!resp || !resp.ok) return;
-
-      if (resp.status === 'downloading') {
-        if (resp.progress != null) {
-          downloadBtn.textContent = `Downloading... ${Math.round(resp.progress)}%`;
-        } else {
-          downloadBtn.textContent = 'Downloading...';
-        }
-      } else if (resp.status === 'done') {
+      setTranscribeState(resp.status || 'queued');
+      if (resp.status === 'done') {
         clearInterval(pollTimer);
-        showDownloadResult('success', 'Download complete');
+        showTranscriptionResult('success', 'Done');
+      } else if (resp.status === 'skipped') {
+        clearInterval(pollTimer);
+        showTranscriptionResult('error', 'Skipped');
       } else if (resp.status === 'error') {
         clearInterval(pollTimer);
-        showDownloadResult('error', resp.error || 'Download failed');
+        showTranscriptionResult('error', 'Error');
       }
     });
-  }, 500);
+  }, 1000);
 }
 
-function showDownloadResult(type, message) {
-  downloadBtn.textContent = message;
-  downloadBtn.className = `download-btn ${type}`;
-  downloadBtn.disabled = true;
-  setTimeout(() => {
-    downloadBtn.textContent = 'Download Video';
-    downloadBtn.className = 'download-btn';
-    downloadBtn.disabled = false;
-  }, 3000);
+function setTranscribeState(status) {
+  if (status === 'queued') {
+    transcribeBtn.textContent = 'Queued';
+    transcribeBtn.className = 'download-btn downloading';
+    transcribeBtn.disabled = true;
+  } else if (status === 'transcribing') {
+    transcribeBtn.textContent = 'Transcribing';
+    transcribeBtn.className = 'download-btn downloading';
+    transcribeBtn.disabled = true;
+  } else if (status === 'done') {
+    transcribeBtn.textContent = 'Done';
+    transcribeBtn.className = 'download-btn success';
+    transcribeBtn.disabled = true;
+  } else if (status === 'skipped') {
+    transcribeBtn.textContent = 'Skipped';
+    transcribeBtn.className = 'download-btn error';
+    transcribeBtn.disabled = true;
+  } else if (status === 'error') {
+    transcribeBtn.textContent = 'Error';
+    transcribeBtn.className = 'download-btn error';
+    transcribeBtn.disabled = false;
+  } else {
+    transcribeBtn.textContent = 'Transcribe Video';
+    transcribeBtn.className = 'download-btn';
+    transcribeBtn.disabled = false;
+  }
+}
+
+function showTranscriptionResult(type, message) {
+  transcribeBtn.textContent = message;
+  transcribeBtn.className = `download-btn ${type}`;
+  transcribeBtn.disabled = type === 'success';
+  if (type !== 'success') {
+    setTimeout(() => {
+      transcribeBtn.textContent = 'Transcribe Video';
+      transcribeBtn.className = 'download-btn';
+      transcribeBtn.disabled = false;
+    }, 3000);
+  }
 }
 
 document.getElementById('open-debug').addEventListener('click', () => {
