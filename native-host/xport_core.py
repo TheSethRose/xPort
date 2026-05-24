@@ -132,8 +132,8 @@ def _api_json(method, path, payload=None, query=None):
 
 
 def list_stored_tweets_from_api(limit=50, offset=0, include_raw=False):
-    """Fetch recent stored tweets from the hosted API, including media rows."""
-    limit = max(1, min(int(limit or 50), 100))
+    """Fetch a stored tweet page from the hosted API, including media rows."""
+    limit = max(1, min(int(limit or 50), 500))
     offset = max(0, int(offset or 0))
     query = {
         'limit': limit,

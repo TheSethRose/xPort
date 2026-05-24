@@ -858,6 +858,39 @@ input[type="checkbox"] {
   color: var(--text-muted);
 }
 
+.transcription-list {
+  display: grid;
+  gap: 12px;
+}
+
+.transcription-card {
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: #111;
+}
+
+.transcript-text {
+  max-height: 260px;
+  margin: 12px 0 0;
+  padding: 12px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: #0c0c0c;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.empty-note {
+  margin: 10px 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
 .json-block,
 .sandbox-output,
 .log-output {

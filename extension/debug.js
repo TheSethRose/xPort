@@ -37,12 +37,14 @@ const state = {
   interactionTimer: null,
   lastRefreshAt: null,
   activeDropdownId: null,
+  storedTweetsRefreshInFlight: false,
   filters: {
     search: '',
     status: 'all',
     source: 'all',
     endpoint: 'all',
     media: 'all',
+    transcription: 'all',
     author: 'all',
     time: 'all',
     sort: 'newest',
@@ -85,6 +87,7 @@ const els = {
   sourceFilter: $('source-filter'),
   endpointFilter: $('endpoint-filter'),
   mediaFilter: $('media-filter'),
+  transcriptionFilter: $('transcription-filter'),
   authorFilter: $('author-filter'),
   timeFilter: $('time-filter'),
   sortFilter: $('sort-filter'),
@@ -177,6 +180,9 @@ const els = {
 const SEARCHABLE_THRESHOLD = 7;
 const VIRTUALIZE_DROPDOWN_THRESHOLD = 500;
 const DROPDOWN_OPTION_HEIGHT = 44;
+const STORED_TWEET_PAGE_SIZE = 500;
+const STORED_TWEET_RECENT_PAGE_SIZE = 100;
+const STORED_TWEET_MAX_OFFSET = 100000;
 const searchableDropdowns = new Map();
 
 const dropdownConfigs = {
@@ -220,6 +226,16 @@ const dropdownConfigs = {
     placeholder: 'Search media...',
     ariaLabel: 'Search media',
     emptyName: 'media options',
+    searchableThreshold: Number.POSITIVE_INFINITY,
+  },
+  transcription: {
+    filterKey: 'transcription',
+    select: els.transcriptionFilter,
+    wrapperClass: 'transcription-select',
+    allLabel: 'All transcription',
+    placeholder: 'Search transcription...',
+    ariaLabel: 'Search transcription',
+    emptyName: 'transcription states',
     searchableThreshold: Number.POSITIVE_INFINITY,
   },
   author: {
@@ -310,22 +326,89 @@ async function refreshHealth() {
 }
 
 async function refreshStoredTweets(options = {}) {
+  if (state.storedTweetsRefreshInFlight) return;
+  state.storedTweetsRefreshInFlight = true;
   updateRefreshState('Refreshing...');
-  const resp = await sendMessage({ type: 'GET_STORED_TWEETS', limit: 100, includeRaw: true });
-  if (!resp?.ok) {
-    state.storedTweets = [];
-    renderTweetMessage(resp?.error || 'Stored tweets are unavailable.');
-    renderMetrics();
-    updateRefreshState('Update failed');
-    return;
+  try {
+    if (options.incremental && state.storedTweets.length > 0) {
+      const resp = await sendMessage({
+        type: 'GET_STORED_TWEETS',
+        limit: STORED_TWEET_RECENT_PAGE_SIZE,
+        offset: 0,
+        includeRaw: true,
+      });
+      if (!resp?.ok) {
+        updateRefreshState('Update failed');
+        return;
+      }
+      const tweets = mergeStoredTweets((resp.tweets || []).map(normalizeStoredTweet), state.storedTweets);
+      if (options.deferable && shouldDeferVisualRefresh()) {
+        state.pendingVisualRefresh.storedTweets = tweets;
+        updateRefreshState('Auto-refresh paused while editing');
+        return;
+      }
+      applyStoredTweets(tweets, options);
+      return;
+    }
+
+    const tweets = [];
+    const seenPageIds = new Set();
+    let offset = 0;
+    let resp = null;
+    do {
+      resp = await sendMessage({
+        type: 'GET_STORED_TWEETS',
+        limit: STORED_TWEET_PAGE_SIZE,
+        offset,
+        includeRaw: true,
+      });
+      if (!resp?.ok) break;
+      const page = resp.tweets || [];
+      const normalizedPage = page.map(normalizeStoredTweet);
+      const newPageRows = normalizedPage.filter((tweet) => {
+        if (!tweet.id || seenPageIds.has(tweet.id)) return false;
+        seenPageIds.add(tweet.id);
+        return true;
+      });
+      tweets.push(...newPageRows);
+      offset += page.length;
+      if (page.length > 0) {
+        updateRefreshState(`Loaded ${tweets.length.toLocaleString()} tweets...`);
+        if (!shouldDeferVisualRefresh()) {
+          state.storedTweets = tweets;
+          renderAllTweets({ autoScroll: !!options.autoScroll && offset === page.length });
+        }
+      }
+      if (newPageRows.length === 0 && page.length > 0) break;
+    } while ((resp.tweets || []).length > 0 && offset <= STORED_TWEET_MAX_OFFSET);
+
+    if (!resp?.ok) {
+      state.storedTweets = [];
+      renderTweetMessage(resp?.error || 'Stored tweets are unavailable.');
+      renderMetrics();
+      updateRefreshState('Update failed');
+      return;
+    }
+    if (options.deferable && shouldDeferVisualRefresh()) {
+      state.pendingVisualRefresh.storedTweets = tweets;
+      updateRefreshState('Auto-refresh paused while editing');
+      return;
+    }
+    applyStoredTweets(tweets, options);
+  } finally {
+    state.storedTweetsRefreshInFlight = false;
   }
-  const tweets = (resp.tweets || []).map(normalizeStoredTweet);
-  if (options.deferable && shouldDeferVisualRefresh()) {
-    state.pendingVisualRefresh.storedTweets = tweets;
-    updateRefreshState('Auto-refresh paused while editing');
-    return;
+}
+
+function mergeStoredTweets(incoming, existing) {
+  const byId = new Map();
+  for (const tweet of incoming) {
+    if (tweet.id) byId.set(tweet.id, tweet);
   }
-  applyStoredTweets(tweets, options);
+  for (const tweet of existing) {
+    if (tweet.id && !byId.has(tweet.id)) byId.set(tweet.id, tweet);
+  }
+  return [...byId.values()];
 }
 
 function refreshEvents(options = {}) {
@@ -494,7 +577,32 @@ function populateTweetFilterOptions(rows) {
   syncAllSearchableDropdowns();
 }
 
+function syncDropdownSelect(select) {
+  const dropdown = searchableDropdowns.get(select);
+  if (!dropdown) return;
+  dropdown.options = [...select.options].map((option, index) => ({
+    id: `${dropdown.id}-filter-option-${index}`,
+    value: option.value,
+    label: option.textContent || option.value,
+    secondary: option.dataset.secondary || '',
+    searchText: option.dataset.searchText || '',
+    selected: option.value === select.value,
+    all: option.value === 'all',
+  }));
+  dropdown.button.textContent = selectedOptionLabel(select, select.value);
+  if (dropdown.menu) {
+    dropdown.pendingSync = true;
+    return;
+  }
+  dropdown.pendingSync = false;
+}
+
+function syncAllSearchableDropdowns() {
+  for (const select of searchableDropdowns.keys()) syncDropdownSelect(select);
+}
+
 function replaceOptions(select, allLabel, values) {
+  if (!select) return;
   const current = select.value;
   select.innerHTML = '';
   const all = document.createElement('option');
@@ -511,7 +619,7 @@ function replaceOptions(select, allLabel, values) {
     select.appendChild(option);
   }
   select.value = optionValueOrAll(select, current);
-  syncSearchableDropdown(select);
+  syncDropdownSelect(select);
 }
 
 function optionValueOrAll(select, value) {
@@ -612,33 +720,9 @@ function initSearchableDropdowns() {
 
     button.addEventListener('click', () => toggleSearchableDropdown(dropdown));
     button.addEventListener('keydown', (event) => handleTriggerKeydown(event, dropdown));
-    select.addEventListener('change', () => syncSearchableDropdown(select));
-    syncSearchableDropdown(select);
+    select.addEventListener('change', () => syncDropdownSelect(select));
+    syncDropdownSelect(select);
   }
-}
-
-function syncAllSearchableDropdowns() {
-  for (const select of searchableDropdowns.keys()) syncSearchableDropdown(select);
-}
-
-function syncSearchableDropdown(select) {
-  const dropdown = searchableDropdowns.get(select);
-  if (!dropdown) return;
-  dropdown.options = [...select.options].map((option, index) => ({
-    id: `${dropdown.id}-filter-option-${index}`,
-    value: option.value,
-    label: option.textContent || option.value,
-    secondary: option.dataset.secondary || '',
-    searchText: option.dataset.searchText || '',
-    selected: option.value === select.value,
-    all: option.value === 'all',
-  }));
-  dropdown.button.textContent = selectedOptionLabel(select, select.value);
-  if (dropdown.menu) {
-    dropdown.pendingSync = true;
-    return;
-  }
-  dropdown.pendingSync = false;
 }
 
 function toggleSearchableDropdown(dropdown) {
@@ -648,7 +732,7 @@ function toggleSearchableDropdown(dropdown) {
 
 function openSearchableDropdown(dropdown) {
   closeOpenSearchableDropdown();
-  syncSearchableDropdown(dropdown.select);
+  syncDropdownSelect(dropdown.select);
   state.activeDropdownId = dropdown.id;
   markUserInteracting(60000);
   dropdown.search = '';
@@ -719,7 +803,7 @@ function closeSearchableDropdown(dropdown, options = {}) {
   window.removeEventListener('scroll', positionOpenSearchableDropdown, true);
   if (options.applyPending && dropdown.pendingSync) {
     dropdown.pendingSync = false;
-    syncSearchableDropdown(dropdown.select);
+    syncDropdownSelect(dropdown.select);
   }
   setTimeout(applyPendingVisualRefresh, 0);
 }
@@ -813,7 +897,7 @@ function renderSearchableOptions(dropdown, options = {}) {
   }
 
   updateActiveDescendant(dropdown);
-  scrollHighlightedOptionIntoView(dropdown);
+  if (!options.fromScroll) scrollHighlightedOptionIntoView(dropdown);
 }
 
 function virtualizedOptionWindow(dropdown, options = {}) {
@@ -830,7 +914,7 @@ function keepVirtualizedHighlightVisible(dropdown) {
   const viewTop = dropdown.listbox.scrollTop;
   const viewBottom = viewTop + (dropdown.listbox.clientHeight || 282);
   if (top < viewTop) dropdown.listbox.scrollTop = top;
-  else if (bottom > viewBottom) dropdown.listbox.scrollTop = bottom - (dropdown.listbox.clientHeight || 282);
+  else if (bottom > viewBottom) dropdown.listbox.scrollTop = Math.max(0, bottom - (dropdown.listbox.clientHeight || 282));
 }
 
 function renderSearchableOption(dropdown, option, index) {
@@ -957,6 +1041,7 @@ function filterTweetRows(rows) {
     if (state.filters.endpoint !== 'all' && row.endpoint !== state.filters.endpoint) return false;
     if (state.filters.author !== 'all' && row.authorHandle !== state.filters.author) return false;
     if (!matchesMediaFilter(row)) return false;
+    if (!matchesTranscriptionFilter(row)) return false;
     if (!matchesTimeFilter(row, now)) return false;
     if (state.filters.hasQuoted && !row.quotedTweetId) return false;
     if (state.filters.hasReply && !row.inReplyTo) return false;
@@ -992,6 +1077,15 @@ function matchesMediaFilter(row) {
     case 'multiple': return mediaItems(row).length + (hasLink(row) ? 1 : 0) > 1;
     default: return true;
   }
+}
+
+function matchesTranscriptionFilter(row) {
+  const media = transcriptableMediaItems(row);
+  if (state.filters.transcription === 'all') return true;
+  if (state.filters.transcription === 'has_text') {
+    return media.some(item => String(item.transcript_text || '').trim().length > 0);
+  }
+  return media.some(item => transcriptStatus(item) === state.filters.transcription);
 }
 
 function matchesTimeFilter(row, now) {
@@ -1196,11 +1290,9 @@ function actionsCell(row) {
     const open = actionButton('Open on X', () => window.open(row.url, '_blank', 'noreferrer'));
     wrap.prepend(open);
   }
-  for (const item of mediaItems(row)) {
-    if (item.media_type === 'video' || item.media_type === 'animated_gif') {
-      wrap.appendChild(actionButton('Transcribe', () => transcribeMedia(row, item)));
-      break;
-    }
+  const transcribable = nextTranscribableMediaItem(row);
+  if (transcribable) {
+    wrap.appendChild(actionButton('Transcribe', () => transcribeMedia(row, transcribable)));
   }
   td.appendChild(wrap);
   td.addEventListener('click', (event) => event.stopPropagation());
@@ -1268,6 +1360,7 @@ function drawerHtml(row) {
         <dt>Media</dt><dd>${escapeHtml(summarizeMedia(row))}</dd>
       </dl>
     </section>
+    ${drawerTranscriptionHtml(row)}
     <section class="drawer-section">
       <h3>Capture Status</h3>
       <dl class="detail-list">
@@ -1315,6 +1408,38 @@ function drawerHtml(row) {
         <button id="drawer-delete" class="small-btn">Remove from view</button>
       </div>
     </section>
+  `;
+}
+
+function drawerTranscriptionHtml(row) {
+  const media = transcriptableMediaItems(row);
+  if (!media.length) return '';
+  return `
+    <section class="drawer-section">
+      <h3>Transcription</h3>
+      <div class="transcription-list">
+        ${media.map(drawerTranscriptionItemHtml).join('')}
+      </div>
+    </section>
+  `;
+}
+
+function drawerTranscriptionItemHtml(item) {
+  const transcript = String(item.transcript_text || '').trim();
+  const status = transcriptStatus(item);
+  const type = item.media_type || item.type || 'media';
+  return `
+    <article class="transcription-card">
+      <dl class="detail-list">
+        <dt>Media ID</dt><dd>${escapeHtml(item.media_id || item.id || '—')}</dd>
+        <dt>Type</dt><dd>${escapeHtml(type)}</dd>
+        <dt>Status</dt><dd>${escapeHtml(transcriptStatusLabel(status))}</dd>
+        <dt>Model</dt><dd>${escapeHtml(item.transcript_model || '—')}</dd>
+        <dt>Transcribed</dt><dd>${escapeHtml(formatFullDate(item.transcribed_at))}</dd>
+        <dt>Error</dt><dd>${escapeHtml(item.transcript_error || '—')}</dd>
+      </dl>
+      ${transcript ? `<pre class="transcript-text">${escapeHtml(transcript)}</pre>` : '<p class="empty-note">No transcript text stored.</p>'}
+    </article>
   `;
 }
 
@@ -1480,6 +1605,7 @@ function renderActiveFilters() {
   add('source', 'Source', state.filters.source);
   add('endpoint', 'Endpoint', state.filters.endpoint);
   add('media', 'Media', selectedOptionLabel(els.mediaFilter, state.filters.media));
+  add('transcription', 'Transcription', selectedOptionLabel(els.transcriptionFilter, state.filters.transcription));
   add('author', 'Author', state.filters.author && state.filters.author !== 'all' ? `@${state.filters.author}` : 'all');
   add('time', 'Time', selectedOptionLabel(els.timeFilter, state.filters.time));
   add('sort', 'Sort', selectedOptionLabel(els.sortFilter, state.filters.sort === 'newest' ? 'all' : state.filters.sort));
@@ -1726,6 +1852,7 @@ function bindEvents() {
   els.sourceFilter.addEventListener('change', () => updateFilter('source', els.sourceFilter.value));
   els.endpointFilter.addEventListener('change', () => updateFilter('endpoint', els.endpointFilter.value));
   els.mediaFilter.addEventListener('change', () => updateFilter('media', els.mediaFilter.value));
+  els.transcriptionFilter.addEventListener('change', () => updateFilter('transcription', els.transcriptionFilter.value));
   els.authorFilter.addEventListener('change', () => updateFilter('author', normalizeFilterValue(els.authorFilter.value)));
   els.timeFilter.addEventListener('change', () => updateFilter('time', els.timeFilter.value));
   els.sortFilter.addEventListener('change', () => updateFilter('sort', els.sortFilter.value));
@@ -1878,6 +2005,7 @@ function resetFilter(key) {
     source: 'all',
     endpoint: 'all',
     media: 'all',
+    transcription: 'all',
     author: 'all',
     time: 'all',
     sort: 'newest',
@@ -1900,6 +2028,7 @@ function clearFilters() {
     source: 'all',
     endpoint: 'all',
     media: 'all',
+    transcription: 'all',
     author: 'all',
     time: 'all',
     sort: 'newest',
@@ -1920,6 +2049,7 @@ function syncFilterInputs() {
   els.endpointFilter.value = state.filters.endpoint;
   els.authorFilter.value = state.filters.author;
   els.mediaFilter.value = state.filters.media;
+  els.transcriptionFilter.value = state.filters.transcription;
   els.timeFilter.value = state.filters.time;
   els.sortFilter.value = state.filters.sort;
   $('filter-quoted').checked = !!state.filters.hasQuoted;
@@ -2011,6 +2141,33 @@ function updateRefreshState(label) {
 
 function mediaItems(row) {
   return Array.isArray(row.media) ? row.media : [];
+}
+
+function transcriptableMediaItems(row) {
+  return mediaItems(row).filter(item => {
+    const type = item.media_type || item.type;
+    return type === 'video' || type === 'animated_gif';
+  });
+}
+
+function nextTranscribableMediaItem(row) {
+  return transcriptableMediaItems(row).find(item => !isMediaTranscribed(item) && !isTranscriptionInProgress(item));
+}
+
+function isMediaTranscribed(item) {
+  return transcriptStatus(item) === 'done' || String(item.transcript_text || '').trim().length > 0;
+}
+
+function isTranscriptionInProgress(item) {
+  return ['queued', 'transcribing'].includes(transcriptStatus(item));
+}
+
+function transcriptStatus(item) {
+  return item.transcript_status || (String(item.transcript_text || '').trim() ? 'done' : 'not_requested');
+}
+
+function transcriptStatusLabel(status) {
+  return String(status || 'not_requested').replaceAll('_', ' ');
 }
 
 function hasAnyMedia(row) {
@@ -2169,7 +2326,7 @@ async function init() {
       updateRefreshState('Auto-refresh paused while capture is paused');
       return;
     }
-    refreshStoredTweets({ deferable: true });
+    refreshStoredTweets({ deferable: true, incremental: true });
     refreshEvents({ deferable: true });
   }, 5000);
 

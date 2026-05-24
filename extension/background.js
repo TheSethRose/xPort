@@ -354,6 +354,7 @@ async function sendToHost(msg) {
     body = {
       limit: msg.limit || 50,
       offset: msg.offset || 0,
+      includeRaw: !!msg.includeRaw,
     };
   } else {
     path = '/tweets';

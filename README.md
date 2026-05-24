@@ -286,7 +286,7 @@ export XPORT_OUTPUT_DIR="$HOME/Documents/xport-data"
 |---|---|---|
 | Popup "Media / debug directory" | *(empty — uses default)* | Overrides the artifact path per-session |
 | `XPORT_OUTPUT_DIR` env var | `~/Downloads/xport` | Fallback for debug logs, dumps, media, and videos |
-| Debug Dashboard | — | Accessible via popup link; opens to the tweet-first Captured Tweets workspace with filters, detail drawer, export actions, live events, parser tools, transport diagnostics, and settings |
+| Debug Dashboard | — | Accessible via popup link; opens to the tweet-first Captured Tweets workspace with searchable long-list filters, including transcription status, detail drawer, export actions, live events, parser tools, transport diagnostics, and settings |
 
 > **macOS note:** On macOS, the HTTP daemon (installed via `install.sh`) runs outside browser TCC sandboxes and can write to protected paths like `~/Documents` and iCloud Drive after a one-time macOS permission prompt.
 
@@ -476,7 +476,7 @@ XPort/
 
 After modifying extension files (`extension/background.js`, `extension/lib/`, `extension/content-*.js`, `extension/popup.*`), reload the extension in Chrome (`chrome://extensions`) and hard-reload any open X tabs.
 
-**Popup and dashboard:** The popup is the lightweight control center: capture status, session/all-time counts, recent session tweets, pause/resume, output directory feedback, and direct links to dashboard tabs. The dashboard opens to the tweet-first Tweets tab with stored Postgres tweets, recent capture statuses, filters, bulk actions, export actions, and a detail drawer for related events plus raw/parsed JSON. Live Events, Parser, Debug, and Settings tabs keep capture streams, parser testing, transport health, debug logging, discovery mode, and display preferences out of the main tweet workspace. Stored tweets and capture events have auto-refresh and auto-scroll controls. Enable debug logging to write timestamped service worker logs to `debug-YYYY-MM-DD.log`, or discovery mode to log endpoint response shapes to the console.
+**Popup and dashboard:** The popup is the lightweight control center: capture status, session/all-time counts, recent session tweets, pause/resume, output directory feedback, and direct links to dashboard tabs. The dashboard opens to the tweet-first Tweets tab with all stored Postgres tweets, related current-session capture statuses, searchable long-list filters including transcription status, removable active filter chips, bulk actions, export actions, and a detail drawer for related events plus raw/parsed JSON. Live Events is focused on the current-session capture stream. Parser, Debug, and Settings tabs keep parser testing, transport health, debug logging, discovery mode, and display preferences out of the main tweet workspace. Stored tweets and capture events have auto-refresh and auto-scroll controls; open filter dropdowns pause only visual refresh updates while data continues fetching in the background. Enable debug logging to write timestamped service worker logs to `debug-YYYY-MM-DD.log`, or discovery mode to log endpoint response shapes to the console.
 
 **Dev mode:** When loaded unpacked (developer mode), the extension prefers `chrome.storage.session` for `seenIds` and `mediaSeenIds` dedup caches, and falls back to `chrome.storage.local` if session storage APIs are unavailable. When session storage is available, reloading the extension automatically clears the cache — no need to manually clear storage between test runs.
 
