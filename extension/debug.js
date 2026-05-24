@@ -2,6 +2,22 @@ import { extractTweets } from './lib/tweet-parser.js';
 
 const traceStorage = chrome.storage.session || chrome.storage.local;
 const traceArea = chrome.storage.session ? 'session' : 'local';
+const settingsStorage = chrome.storage?.local || null;
+
+const DEFAULT_SETTINGS = {
+  density: 'compact',
+  defaultTab: 'tweets',
+  timestampFormat: 'relative_exact',
+  theme: 'charcoal',
+  autoRefresh: true,
+  autoScrollLiveEvents: true,
+  captureEnabled: true,
+  deduplicateTweets: true,
+  preserveRawPayloads: true,
+  debugLogging: false,
+  discoveryMode: false,
+  verboseEndpointLogging: false,
+};
 
 const state = {
   health: null,
@@ -12,6 +28,15 @@ const state = {
   selectedIds: new Set(),
   activeTweetId: null,
   activeTab: 'tweets',
+  settings: { ...DEFAULT_SETTINGS },
+  pendingVisualRefresh: {
+    storedTweets: null,
+    events: null,
+  },
+  interactingUntil: 0,
+  interactionTimer: null,
+  lastRefreshAt: null,
+  activeDropdownId: null,
   filters: {
     search: '',
     status: 'all',
@@ -21,10 +46,6 @@ const state = {
     author: 'all',
     time: 'all',
     sort: 'newest',
-    hasLink: false,
-    hasMedia: false,
-    hasImage: false,
-    hasVideo: false,
     hasQuoted: false,
     hasReply: false,
     duplicateOnly: false,
@@ -45,6 +66,7 @@ const els = {
   headerTransport: $('header-transport'),
   headerCapture: $('header-capture'),
   headerLastTweet: $('header-last-tweet'),
+  headerRefreshState: $('header-refresh-state'),
   headerStatus: $('header-status'),
   pauseCapture: $('pause-capture'),
   refreshAll: $('refresh-all'),
@@ -77,6 +99,7 @@ const els = {
   bulkRerun: $('bulk-rerun'),
   bulkRemove: $('bulk-remove'),
   bulkReviewed: $('bulk-reviewed'),
+  dropdownLayer: $('dropdown-layer'),
 
   metricCaptured: $('metric-captured'),
   metricAccepted: $('metric-accepted'),
@@ -136,6 +159,8 @@ const els = {
   densityComfortable: $('density-comfortable'),
   densityCompact: $('density-compact'),
   defaultTab: $('default-tab'),
+  timestampFormat: $('timestamp-format'),
+  themeSelect: $('theme-select'),
   exportAllTweets: $('export-all-tweets'),
   exportAllEvents: $('export-all-events'),
   clearViewTweets: $('clear-view-tweets'),
@@ -149,10 +174,132 @@ const els = {
   toast: $('toast'),
 };
 
+const SEARCHABLE_THRESHOLD = 7;
+const VIRTUALIZE_DROPDOWN_THRESHOLD = 500;
+const DROPDOWN_OPTION_HEIGHT = 44;
+const searchableDropdowns = new Map();
+
+const dropdownConfigs = {
+  status: {
+    filterKey: 'status',
+    select: els.statusFilter,
+    wrapperClass: 'status-select',
+    allLabel: 'All statuses',
+    placeholder: 'Search statuses...',
+    ariaLabel: 'Search statuses',
+    emptyName: 'statuses',
+    searchableThreshold: SEARCHABLE_THRESHOLD,
+  },
+  source: {
+    filterKey: 'source',
+    select: els.sourceFilter,
+    wrapperClass: 'source-select',
+    allLabel: 'All sources',
+    placeholder: 'Search sources...',
+    ariaLabel: 'Search sources',
+    emptyName: 'sources',
+    searchableThreshold: SEARCHABLE_THRESHOLD,
+    alwaysSearchable: true,
+  },
+  endpoint: {
+    filterKey: 'endpoint',
+    select: els.endpointFilter,
+    wrapperClass: 'endpoint-select',
+    allLabel: 'All endpoints',
+    placeholder: 'Search endpoints...',
+    ariaLabel: 'Search endpoints',
+    emptyName: 'endpoints',
+    searchableThreshold: SEARCHABLE_THRESHOLD,
+    alwaysSearchable: true,
+  },
+  media: {
+    filterKey: 'media',
+    select: els.mediaFilter,
+    wrapperClass: 'media-select',
+    allLabel: 'All media',
+    placeholder: 'Search media...',
+    ariaLabel: 'Search media',
+    emptyName: 'media options',
+    searchableThreshold: Number.POSITIVE_INFINITY,
+  },
+  author: {
+    filterKey: 'author',
+    select: els.authorFilter,
+    wrapperClass: 'author-select',
+    allLabel: 'All authors',
+    placeholder: 'Search authors...',
+    ariaLabel: 'Search authors',
+    emptyName: 'authors',
+    searchableThreshold: SEARCHABLE_THRESHOLD,
+    minWidth: 300,
+    ignoreAt: true,
+    alwaysSearchable: true,
+  },
+};
+
 function sendMessage(message) {
   return new Promise((resolve) => {
     chrome.runtime.sendMessage(message, (resp) => resolve(resp));
   });
+}
+
+function getLocalSettings() {
+  if (settingsStorage) {
+    return new Promise((resolve) => {
+      settingsStorage.get(['dashboardSettings', 'captureEnabled', 'debugLogging', 'verboseLogging'], resolve);
+    });
+  }
+  try {
+    return Promise.resolve({ dashboardSettings: JSON.parse(localStorage.getItem('dashboardSettings') || '{}') });
+  } catch {
+    return Promise.resolve({ dashboardSettings: {} });
+  }
+}
+
+function setLocalSettings(value) {
+  if (settingsStorage) {
+    return new Promise((resolve) => settingsStorage.set(value, resolve));
+  }
+  localStorage.setItem('dashboardSettings', JSON.stringify(value.dashboardSettings || state.settings));
+  return Promise.resolve();
+}
+
+async function loadSettings() {
+  const stored = await getLocalSettings();
+  state.settings = {
+    ...DEFAULT_SETTINGS,
+    ...(stored.dashboardSettings || {}),
+  };
+  if (typeof stored.captureEnabled === 'boolean') state.settings.captureEnabled = stored.captureEnabled;
+  if (typeof stored.debugLogging === 'boolean') state.settings.debugLogging = stored.debugLogging;
+  if (typeof stored.verboseLogging === 'boolean') {
+    state.settings.discoveryMode = stored.verboseLogging;
+    state.settings.verboseEndpointLogging = stored.verboseLogging;
+  }
+  applySettingsToUi();
+}
+
+async function saveSettings(partial, toastMessage) {
+  state.settings = { ...state.settings, ...partial };
+  await setLocalSettings({ dashboardSettings: state.settings });
+  applySettingsToUi();
+  if (toastMessage) showToast(toastMessage);
+}
+
+function applySettingsToUi() {
+  document.body.classList.toggle('density-compact', state.settings.density === 'compact');
+  document.body.classList.toggle('density-comfortable', state.settings.density !== 'compact');
+  els.densityComfortable.classList.toggle('active', state.settings.density !== 'compact');
+  els.densityCompact.classList.toggle('active', state.settings.density === 'compact');
+  els.defaultTab.value = state.settings.defaultTab || 'tweets';
+  els.timestampFormat.value = state.settings.timestampFormat || 'relative_exact';
+  els.themeSelect.value = state.settings.theme || 'charcoal';
+  els.tweetsAutoRefresh.checked = !!state.settings.autoRefresh;
+  els.eventsAutoRefresh.checked = !!state.settings.autoRefresh;
+  els.settingsAutoRefresh.checked = !!state.settings.autoRefresh;
+  els.tweetsAutoScroll.checked = !!state.settings.autoScrollLiveEvents;
+  els.autoScroll.checked = !!state.settings.autoScrollLiveEvents;
+  els.settingsAutoScroll.checked = !!state.settings.autoScrollLiveEvents;
 }
 
 async function refreshHealth() {
@@ -162,25 +309,49 @@ async function refreshHealth() {
   renderHealth();
 }
 
-async function refreshStoredTweets() {
+async function refreshStoredTweets(options = {}) {
+  updateRefreshState('Refreshing...');
   const resp = await sendMessage({ type: 'GET_STORED_TWEETS', limit: 100, includeRaw: true });
   if (!resp?.ok) {
     state.storedTweets = [];
     renderTweetMessage(resp?.error || 'Stored tweets are unavailable.');
     renderMetrics();
+    updateRefreshState('Update failed');
     return;
   }
-  state.storedTweets = (resp.tweets || []).map(normalizeStoredTweet);
-  renderAllTweets();
+  const tweets = (resp.tweets || []).map(normalizeStoredTweet);
+  if (options.deferable && shouldDeferVisualRefresh()) {
+    state.pendingVisualRefresh.storedTweets = tweets;
+    updateRefreshState('Auto-refresh paused while editing');
+    return;
+  }
+  applyStoredTweets(tweets, options);
 }
 
-function refreshEvents() {
+function refreshEvents(options = {}) {
   traceStorage.get(['lastEvents'], (result) => {
-    state.events = normalizeEvents(result.lastEvents || []);
-    renderAllTweets();
-    renderEvents();
-    renderDiagnostics();
+    const events = normalizeEvents(result.lastEvents || []);
+    if (options.deferable && shouldDeferVisualRefresh()) {
+      state.pendingVisualRefresh.events = events;
+      updateRefreshState('Auto-refresh paused while editing');
+      return;
+    }
+    applyEvents(events, options);
   });
+}
+
+function applyStoredTweets(tweets, options = {}) {
+  state.storedTweets = tweets;
+  renderAllTweets({ autoScroll: !!options.autoScroll });
+  markUpdated();
+}
+
+function applyEvents(events, options = {}) {
+  state.events = events;
+  renderAllTweets({ autoScroll: !!options.autoScroll });
+  renderEvents({ autoScroll: !!options.autoScroll });
+  renderDiagnostics();
+  markUpdated();
 }
 
 function normalizeStoredTweet(tweet) {
@@ -282,12 +453,12 @@ function relatedEvents(tweetId) {
   return state.events.filter(event => event.tweetId === tweetId);
 }
 
-function renderAllTweets() {
+function renderAllTweets(options = {}) {
   const rows = buildTweetRows();
   populateTweetFilterOptions(rows);
   renderMetrics(rows);
   const filteredRows = filterTweetRows(rows);
-  renderTweetTable(filteredRows);
+  renderTweetTable(filteredRows, options);
   renderActiveFilters();
   renderBulkBar(filteredRows);
   updateHeaderLastTweet(rows);
@@ -301,25 +472,26 @@ function renderMetrics(rows = buildTweetRows()) {
   const withMedia = rows.filter(hasAnyMedia).length;
   const sources = unique(rows.map(row => row.source).filter(Boolean));
 
-  els.metricCaptured.textContent = String(stored);
-  els.metricAccepted.textContent = String(acceptedEvents || stored);
-  els.metricDeduped.textContent = String(deduped);
-  els.metricErrors.textContent = String(errors);
-  els.metricMedia.textContent = String(withMedia);
-  els.metricSources.textContent = String(sources.length);
-  els.metricSourceList.textContent = sources.slice(0, 2).join(', ') || 'active';
-  els.tweetsSummary.textContent = `${stored} captured · ${acceptedEvents || stored} accepted · ${deduped} deduplicated · ${errors} parser errors · ${withMedia} with media`;
+  setTextIfChanged(els.metricCaptured, String(stored));
+  setTextIfChanged(els.metricAccepted, String(acceptedEvents || stored));
+  setTextIfChanged(els.metricDeduped, String(deduped));
+  setTextIfChanged(els.metricErrors, String(errors));
+  setTextIfChanged(els.metricMedia, String(withMedia));
+  setTextIfChanged(els.metricSources, String(sources.length));
+  setTextIfChanged(els.metricSourceList, sources.slice(0, 2).join(', ') || 'active');
+  setTextIfChanged(els.tweetsSummary, `${stored} captured · ${acceptedEvents || stored} accepted · ${deduped} deduplicated · ${errors} parser errors · ${withMedia} with media`);
 }
 
 function populateTweetFilterOptions(rows) {
   replaceOptions(els.statusFilter, 'All statuses', unique(rows.map(row => row.status)));
-  replaceOptions(els.sourceFilter, 'All sources', unique(rows.map(row => row.source)));
-  replaceOptions(els.endpointFilter, 'All endpoints', unique(rows.map(row => row.endpoint)));
-  replaceOptions(els.authorFilter, 'All authors', unique(rows.map(row => row.authorHandle).filter(Boolean)).map(handle => `@${handle}`));
+  replaceOptions(els.sourceFilter, 'All sources', countedOptions(rows, 'source'));
+  replaceOptions(els.endpointFilter, 'All endpoints', countedOptions(rows, 'endpoint'));
+  replaceOptions(els.authorFilter, 'All authors', authorOptions(rows));
   els.statusFilter.value = optionValueOrAll(els.statusFilter, state.filters.status);
   els.sourceFilter.value = optionValueOrAll(els.sourceFilter, state.filters.source);
   els.endpointFilter.value = optionValueOrAll(els.endpointFilter, state.filters.endpoint);
   els.authorFilter.value = optionValueOrAll(els.authorFilter, state.filters.author);
+  syncAllSearchableDropdowns();
 }
 
 function replaceOptions(select, allLabel, values) {
@@ -329,13 +501,17 @@ function replaceOptions(select, allLabel, values) {
   all.value = 'all';
   all.textContent = allLabel;
   select.appendChild(all);
-  for (const value of values) {
+  for (const item of values) {
+    const normalized = normalizeOptionItem(item);
     const option = document.createElement('option');
-    option.value = normalizeFilterValue(value);
-    option.textContent = value;
+    option.value = normalized.value;
+    option.textContent = normalized.label;
+    if (normalized.secondary) option.dataset.secondary = normalized.secondary;
+    if (normalized.searchText) option.dataset.searchText = normalized.searchText;
     select.appendChild(option);
   }
   select.value = optionValueOrAll(select, current);
+  syncSearchableDropdown(select);
 }
 
 function optionValueOrAll(select, value) {
@@ -344,6 +520,431 @@ function optionValueOrAll(select, value) {
 
 function normalizeFilterValue(value) {
   return String(value || '').replace(/^@/, '');
+}
+
+function normalizeOptionItem(item) {
+  if (typeof item === 'object' && item !== null) {
+    return {
+      value: normalizeFilterValue(item.value ?? item.label),
+      label: String(item.label ?? item.value ?? ''),
+      secondary: item.secondary ? String(item.secondary) : '',
+      searchText: item.searchText ? String(item.searchText) : '',
+    };
+  }
+  return {
+    value: normalizeFilterValue(item),
+    label: String(item ?? ''),
+    secondary: '',
+    searchText: '',
+  };
+}
+
+function countedOptions(rows, key) {
+  const counts = new Map();
+  for (const row of rows) {
+    const value = row[key];
+    if (!value) continue;
+    counts.set(value, (counts.get(value) || 0) + 1);
+  }
+  return [...counts.entries()]
+    .sort(([a], [b]) => String(a).localeCompare(String(b)))
+    .map(([value, count]) => ({
+      value,
+      label: value,
+      secondary: `${count} ${count === 1 ? 'tweet' : 'tweets'}`,
+      searchText: value,
+    }));
+}
+
+function authorOptions(rows) {
+  const authors = new Map();
+  for (const row of rows) {
+    if (!row.authorHandle) continue;
+    const existing = authors.get(row.authorHandle) || { name: '', count: 0 };
+    authors.set(row.authorHandle, {
+      name: existing.name || row.authorName || '',
+      count: existing.count + 1,
+    });
+  }
+  return [...authors.entries()]
+    .sort(([a], [b]) => String(a).localeCompare(String(b)))
+    .map(([handle, meta]) => ({
+      value: handle,
+      label: `@${handle}`,
+      secondary: meta.name || `${meta.count} ${meta.count === 1 ? 'tweet' : 'tweets'}`,
+      searchText: `@${handle} ${handle} ${meta.name}`,
+    }));
+}
+
+function initSearchableDropdowns() {
+  for (const [id, config] of Object.entries(dropdownConfigs)) {
+    const select = config.select;
+    if (!select || searchableDropdowns.has(select)) continue;
+    const wrapper = document.createElement('div');
+    wrapper.className = `searchable-select ${config.wrapperClass || ''}`;
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'searchable-trigger';
+    button.setAttribute('aria-haspopup', 'listbox');
+    button.setAttribute('aria-expanded', 'false');
+    button.setAttribute('aria-controls', `${id}-filter-listbox`);
+    button.textContent = selectedOptionLabel(select, select.value);
+    select.classList.add('enhanced-native-select');
+    select.after(wrapper);
+    wrapper.appendChild(button);
+
+    const dropdown = {
+      id,
+      config,
+      select,
+      wrapper,
+      button,
+      menu: null,
+      input: null,
+      listbox: null,
+      options: [],
+      visibleOptions: [],
+      search: '',
+      highlightedIndex: 0,
+      pendingSync: false,
+    };
+    searchableDropdowns.set(select, dropdown);
+
+    button.addEventListener('click', () => toggleSearchableDropdown(dropdown));
+    button.addEventListener('keydown', (event) => handleTriggerKeydown(event, dropdown));
+    select.addEventListener('change', () => syncSearchableDropdown(select));
+    syncSearchableDropdown(select);
+  }
+}
+
+function syncAllSearchableDropdowns() {
+  for (const select of searchableDropdowns.keys()) syncSearchableDropdown(select);
+}
+
+function syncSearchableDropdown(select) {
+  const dropdown = searchableDropdowns.get(select);
+  if (!dropdown) return;
+  dropdown.options = [...select.options].map((option, index) => ({
+    id: `${dropdown.id}-filter-option-${index}`,
+    value: option.value,
+    label: option.textContent || option.value,
+    secondary: option.dataset.secondary || '',
+    searchText: option.dataset.searchText || '',
+    selected: option.value === select.value,
+    all: option.value === 'all',
+  }));
+  dropdown.button.textContent = selectedOptionLabel(select, select.value);
+  if (dropdown.menu) {
+    dropdown.pendingSync = true;
+    return;
+  }
+  dropdown.pendingSync = false;
+}
+
+function toggleSearchableDropdown(dropdown) {
+  if (dropdown.menu) closeSearchableDropdown(dropdown, { applyPending: true });
+  else openSearchableDropdown(dropdown);
+}
+
+function openSearchableDropdown(dropdown) {
+  closeOpenSearchableDropdown();
+  syncSearchableDropdown(dropdown.select);
+  state.activeDropdownId = dropdown.id;
+  markUserInteracting(60000);
+  dropdown.search = '';
+  dropdown.highlightedIndex = selectedOptionIndex(dropdown);
+
+  const menu = document.createElement('div');
+  menu.className = 'searchable-menu';
+  menu.id = `${dropdown.id}-filter-menu`;
+  const shouldSearch = shouldShowDropdownSearch(dropdown);
+  if (shouldSearch) {
+    const input = document.createElement('input');
+    input.type = 'search';
+    input.placeholder = dropdown.config.placeholder;
+    input.setAttribute('aria-label', dropdown.config.ariaLabel);
+    input.setAttribute('role', 'combobox');
+    input.setAttribute('aria-controls', `${dropdown.id}-filter-listbox`);
+    input.setAttribute('aria-expanded', 'true');
+    input.spellcheck = false;
+    input.addEventListener('input', () => {
+      dropdown.search = input.value;
+      markUserInteracting(60000);
+      renderSearchableOptions(dropdown, { preferSelected: true });
+    });
+    input.addEventListener('keydown', (event) => handleSearchKeydown(event, dropdown));
+    menu.appendChild(input);
+    dropdown.input = input;
+  } else {
+    dropdown.input = null;
+    menu.addEventListener('keydown', (event) => handleSearchKeydown(event, dropdown));
+  }
+
+  const listbox = document.createElement('div');
+  listbox.className = 'searchable-options';
+  listbox.id = `${dropdown.id}-filter-listbox`;
+  listbox.setAttribute('role', 'listbox');
+  listbox.addEventListener('scroll', () => {
+    if (dropdown.visibleOptions.length > VIRTUALIZE_DROPDOWN_THRESHOLD) renderSearchableOptions(dropdown, { fromScroll: true });
+  });
+  menu.appendChild(listbox);
+  dropdown.menu = menu;
+  dropdown.listbox = listbox;
+  dropdown.button.setAttribute('aria-expanded', 'true');
+  els.dropdownLayer.appendChild(menu);
+  renderSearchableOptions(dropdown, { preferSelected: true });
+  positionSearchableDropdown(dropdown);
+  window.addEventListener('resize', positionOpenSearchableDropdown, true);
+  window.addEventListener('scroll', positionOpenSearchableDropdown, true);
+  if (dropdown.input) {
+    dropdown.input.focus();
+  } else {
+    menu.tabIndex = -1;
+    menu.focus();
+  }
+}
+
+function closeSearchableDropdown(dropdown, options = {}) {
+  if (!dropdown?.menu) return;
+  dropdown.menu.remove();
+  dropdown.menu = null;
+  dropdown.input = null;
+  dropdown.listbox = null;
+  dropdown.visibleOptions = [];
+  dropdown.search = '';
+  dropdown.button.setAttribute('aria-expanded', 'false');
+  if (state.activeDropdownId === dropdown.id) state.activeDropdownId = null;
+  if (!state.activeDropdownId) state.interactingUntil = 0;
+  window.removeEventListener('resize', positionOpenSearchableDropdown, true);
+  window.removeEventListener('scroll', positionOpenSearchableDropdown, true);
+  if (options.applyPending && dropdown.pendingSync) {
+    dropdown.pendingSync = false;
+    syncSearchableDropdown(dropdown.select);
+  }
+  setTimeout(applyPendingVisualRefresh, 0);
+}
+
+function closeOpenSearchableDropdown() {
+  for (const dropdown of searchableDropdowns.values()) {
+    if (dropdown.menu) {
+      closeSearchableDropdown(dropdown, { applyPending: true });
+      return;
+    }
+  }
+}
+
+function positionOpenSearchableDropdown() {
+  const dropdown = [...searchableDropdowns.values()].find(item => item.menu);
+  if (dropdown) positionSearchableDropdown(dropdown);
+}
+
+function positionSearchableDropdown(dropdown) {
+  if (!dropdown.menu) return;
+  const rect = dropdown.button.getBoundingClientRect();
+  const viewportPadding = 8;
+  const width = Math.min(
+    Math.max(rect.width, dropdown.config.minWidth || 0),
+    window.innerWidth - viewportPadding * 2,
+  );
+  const left = Math.min(
+    Math.max(viewportPadding, rect.left),
+    window.innerWidth - width - viewportPadding,
+  );
+  dropdown.menu.style.width = `${width}px`;
+  dropdown.menu.style.left = `${left}px`;
+  dropdown.menu.style.top = '0px';
+  const menuHeight = Math.min(dropdown.menu.offsetHeight || 320, 320);
+  const spaceBelow = window.innerHeight - rect.bottom - viewportPadding;
+  const spaceAbove = rect.top - viewportPadding;
+  const openUp = spaceBelow < menuHeight && spaceAbove > spaceBelow;
+  const top = openUp
+    ? Math.max(viewportPadding, rect.top - menuHeight - 4)
+    : Math.min(rect.bottom + 4, window.innerHeight - menuHeight - viewportPadding);
+  dropdown.menu.style.top = `${top}px`;
+}
+
+function renderSearchableOptions(dropdown, options = {}) {
+  const query = normalizeDropdownSearch(dropdown.search, dropdown.config);
+  const allOption = dropdown.options.find(option => option.all);
+  const matchedOptions = dropdown.options.filter(option => !option.all && optionMatchesSearch(option, query, dropdown.config));
+  dropdown.visibleOptions = allOption ? [allOption, ...matchedOptions] : matchedOptions;
+  const selectedIndex = dropdown.visibleOptions.findIndex(option => option.value === dropdown.select.value);
+  if (options.preferSelected) {
+    dropdown.highlightedIndex = selectedIndex >= 0 ? selectedIndex : 0;
+  } else if (dropdown.highlightedIndex >= dropdown.visibleOptions.length) {
+    dropdown.highlightedIndex = Math.max(0, dropdown.visibleOptions.length - 1);
+  }
+
+  dropdown.listbox.innerHTML = '';
+  const virtualized = dropdown.visibleOptions.length > VIRTUALIZE_DROPDOWN_THRESHOLD;
+  dropdown.listbox.classList.toggle('virtualized', virtualized);
+  const optionsToRender = virtualized ? virtualizedOptionWindow(dropdown, options) : dropdown.visibleOptions.map((option, index) => [option, index]);
+  let spacer = null;
+  if (virtualized) {
+    spacer = document.createElement('div');
+    spacer.className = 'searchable-options-spacer';
+    spacer.style.height = `${dropdown.visibleOptions.length * DROPDOWN_OPTION_HEIGHT}px`;
+    dropdown.listbox.appendChild(spacer);
+  }
+  for (const [option, index] of optionsToRender) {
+    const button = renderSearchableOption(dropdown, option, index);
+    if (virtualized) button.style.transform = `translateY(${index * DROPDOWN_OPTION_HEIGHT}px)`;
+    dropdown.listbox.appendChild(button);
+  }
+
+  if (query && matchedOptions.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'searchable-empty';
+    empty.textContent = `No ${dropdown.config.emptyName} found for "${dropdown.search}"`;
+    const clear = document.createElement('button');
+    clear.type = 'button';
+    clear.className = 'small-btn';
+    clear.textContent = 'Clear search';
+    clear.addEventListener('click', () => {
+      dropdown.search = '';
+      if (dropdown.input) {
+        dropdown.input.value = '';
+        dropdown.input.focus();
+      }
+      renderSearchableOptions(dropdown, { preferSelected: true });
+    });
+    empty.appendChild(clear);
+    dropdown.listbox.appendChild(empty);
+  }
+
+  updateActiveDescendant(dropdown);
+  scrollHighlightedOptionIntoView(dropdown);
+}
+
+function virtualizedOptionWindow(dropdown, options = {}) {
+  if (!options.fromScroll) keepVirtualizedHighlightVisible(dropdown);
+  const visibleCount = Math.ceil((dropdown.listbox.clientHeight || 282) / DROPDOWN_OPTION_HEIGHT) + 6;
+  const start = Math.max(0, Math.floor(dropdown.listbox.scrollTop / DROPDOWN_OPTION_HEIGHT) - 3);
+  const end = Math.min(dropdown.visibleOptions.length, start + visibleCount);
+  return dropdown.visibleOptions.slice(start, end).map((option, offset) => [option, start + offset]);
+}
+
+function keepVirtualizedHighlightVisible(dropdown) {
+  const top = dropdown.highlightedIndex * DROPDOWN_OPTION_HEIGHT;
+  const bottom = top + DROPDOWN_OPTION_HEIGHT;
+  const viewTop = dropdown.listbox.scrollTop;
+  const viewBottom = viewTop + (dropdown.listbox.clientHeight || 282);
+  if (top < viewTop) dropdown.listbox.scrollTop = top;
+  else if (bottom > viewBottom) dropdown.listbox.scrollTop = bottom - (dropdown.listbox.clientHeight || 282);
+}
+
+function renderSearchableOption(dropdown, option, index) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = `searchable-option${option.secondary ? ' has-secondary' : ''}${index === dropdown.highlightedIndex ? ' highlighted' : ''}`;
+  button.id = option.id;
+  button.setAttribute('role', 'option');
+  button.setAttribute('aria-selected', option.value === dropdown.select.value ? 'true' : 'false');
+  button.addEventListener('click', () => selectSearchableOption(dropdown, option));
+
+  const check = document.createElement('span');
+  check.className = 'option-check';
+  check.textContent = option.value === dropdown.select.value ? '✓' : '';
+  const body = document.createElement('span');
+  const label = document.createElement('span');
+  label.className = 'option-label';
+  label.textContent = option.label;
+  body.appendChild(label);
+  if (option.secondary) {
+    const secondary = document.createElement('span');
+    secondary.className = 'option-secondary';
+    secondary.textContent = option.secondary;
+    body.appendChild(secondary);
+  }
+  button.append(check, body);
+  return button;
+}
+
+function selectedOptionIndex(dropdown) {
+  const index = dropdown.options.findIndex(option => option.value === dropdown.select.value);
+  return index >= 0 ? index : 0;
+}
+
+function shouldShowDropdownSearch(dropdown) {
+  return dropdown.config.alwaysSearchable || dropdown.options.length > dropdown.config.searchableThreshold;
+}
+
+function optionMatchesSearch(option, query, config) {
+  if (!query) return true;
+  const haystack = normalizeDropdownSearch(
+    [option.label, option.secondary, option.value, option.searchText].filter(Boolean).join(' '),
+    config,
+  );
+  return haystack.includes(query);
+}
+
+function normalizeDropdownSearch(value, config = {}) {
+  const normalized = String(value || '').toLowerCase();
+  return config.ignoreAt ? normalized.replaceAll('@', '') : normalized;
+}
+
+function handleTriggerKeydown(event, dropdown) {
+  if (['Enter', ' ', 'ArrowDown', 'ArrowUp'].includes(event.key)) {
+    event.preventDefault();
+    openSearchableDropdown(dropdown);
+  }
+}
+
+function handleSearchKeydown(event, dropdown) {
+  if (event.key === 'ArrowDown') {
+    event.preventDefault();
+    moveDropdownHighlight(dropdown, 1);
+  } else if (event.key === 'ArrowUp') {
+    event.preventDefault();
+    moveDropdownHighlight(dropdown, -1);
+  } else if (event.key === 'Home') {
+    event.preventDefault();
+    setDropdownHighlight(dropdown, 0);
+  } else if (event.key === 'End') {
+    event.preventDefault();
+    setDropdownHighlight(dropdown, dropdown.visibleOptions.length - 1);
+  } else if (event.key === 'Enter') {
+    event.preventDefault();
+    const option = dropdown.visibleOptions[dropdown.highlightedIndex];
+    if (option) selectSearchableOption(dropdown, option);
+  } else if (event.key === 'Escape') {
+    event.preventDefault();
+    closeSearchableDropdown(dropdown, { applyPending: true });
+    dropdown.button.focus();
+  } else if (event.key === 'Tab') {
+    closeSearchableDropdown(dropdown, { applyPending: true });
+  }
+}
+
+function moveDropdownHighlight(dropdown, delta) {
+  if (!dropdown.visibleOptions.length) return;
+  const next = (dropdown.highlightedIndex + delta + dropdown.visibleOptions.length) % dropdown.visibleOptions.length;
+  setDropdownHighlight(dropdown, next);
+}
+
+function setDropdownHighlight(dropdown, index) {
+  if (!dropdown.visibleOptions.length) return;
+  dropdown.highlightedIndex = Math.max(0, Math.min(index, dropdown.visibleOptions.length - 1));
+  renderSearchableOptions(dropdown);
+}
+
+function updateActiveDescendant(dropdown) {
+  const option = dropdown.visibleOptions[dropdown.highlightedIndex];
+  const activeId = option?.id || '';
+  if (dropdown.input) dropdown.input.setAttribute('aria-activedescendant', activeId);
+}
+
+function scrollHighlightedOptionIntoView(dropdown) {
+  const option = dropdown.visibleOptions[dropdown.highlightedIndex];
+  if (!option) return;
+  dropdown.listbox.querySelector(`#${CSS.escape(option.id)}`)?.scrollIntoView({ block: 'nearest' });
+}
+
+function selectSearchableOption(dropdown, option) {
+  dropdown.select.value = option.value;
+  dropdown.select.dispatchEvent(new Event('change', { bubbles: true }));
+  closeSearchableDropdown(dropdown, { applyPending: true });
+  dropdown.button.focus();
 }
 
 function filterTweetRows(rows) {
@@ -357,10 +958,6 @@ function filterTweetRows(rows) {
     if (state.filters.author !== 'all' && row.authorHandle !== state.filters.author) return false;
     if (!matchesMediaFilter(row)) return false;
     if (!matchesTimeFilter(row, now)) return false;
-    if (state.filters.hasLink && !hasLink(row)) return false;
-    if (state.filters.hasMedia && !hasAnyMedia(row)) return false;
-    if (state.filters.hasImage && !hasMediaType(row, 'photo')) return false;
-    if (state.filters.hasVideo && !hasMediaType(row, 'video')) return false;
     if (state.filters.hasQuoted && !row.quotedTweetId) return false;
     if (state.filters.hasReply && !row.inReplyTo) return false;
     if (state.filters.duplicateOnly && !isDuplicate(row)) return false;
@@ -418,8 +1015,7 @@ function sortTweetRows(rows) {
   }
 }
 
-function renderTweetTable(rows) {
-  els.tweetsBody.innerHTML = '';
+function renderTweetTable(rows, options = {}) {
   if (rows.length === 0) {
     renderTweetMessage(state.storedTweets.length === 0 && state.events.length === 0
       ? 'No tweets captured yet.'
@@ -427,42 +1023,82 @@ function renderTweetTable(rows) {
     return;
   }
 
+  const scrollTop = els.tweetsWrap.scrollTop;
+  els.tweetsBody.querySelectorAll('tr:not([data-row-id])').forEach(tr => tr.remove());
+  const existingRows = new Map([...els.tweetsBody.querySelectorAll('tr[data-row-id]')]
+    .map(tr => [tr.dataset.rowId, tr]));
+  const visibleIds = new Set();
+
   for (const row of rows) {
-    const tr = document.createElement('tr');
-    tr.dataset.rowId = row.rowId;
-    tr.tabIndex = 0;
-    if (row.id === state.activeTweetId || row.rowId === state.activeTweetId) tr.classList.add('selected');
-
-    const selectTd = document.createElement('td');
-    selectTd.className = 'select-col';
-    const checkbox = document.createElement('input');
-    checkbox.type = 'checkbox';
-    checkbox.checked = state.selectedIds.has(row.rowId);
-    checkbox.setAttribute('aria-label', `Select ${row.text || row.id}`);
-    checkbox.addEventListener('click', (event) => event.stopPropagation());
-    checkbox.addEventListener('change', () => {
-      toggleSelection(row.rowId, checkbox.checked);
-      renderBulkBar(rows);
-    });
-    selectTd.appendChild(checkbox);
-    tr.appendChild(selectTd);
-
-    tr.append(
-      tweetCell(row),
-      textCell(authorLabel(row)),
-      textCell(row.source),
-      textCell(row.endpoint),
-      capturedCell(row),
-      statusCell(row.status),
-      mediaCell(row),
-      actionsCell(row),
-    );
-
-    tr.addEventListener('click', () => openTweetDrawer(row.id || row.rowId));
-    tr.addEventListener('keydown', (event) => handleRowKeydown(event, row));
+    visibleIds.add(row.rowId);
+    const signature = tweetRowSignature(row);
+    const existing = existingRows.get(row.rowId);
+    const tr = existing?.dataset.signature === signature ? existing : createTweetRow(row, rows, signature);
+    if (existing && existing !== tr) existing.replaceWith(tr);
     els.tweetsBody.appendChild(tr);
   }
-  if (els.tweetsAutoScroll.checked) els.tweetsWrap.scrollTop = 0;
+
+  for (const [rowId, tr] of existingRows) {
+    if (!visibleIds.has(rowId)) tr.remove();
+  }
+
+  if (options.autoScroll && els.tweetsAutoScroll.checked) els.tweetsWrap.scrollTop = 0;
+  else els.tweetsWrap.scrollTop = scrollTop;
+}
+
+function createTweetRow(row, rows, signature) {
+  const tr = document.createElement('tr');
+  tr.dataset.rowId = row.rowId;
+  tr.dataset.signature = signature;
+  tr.tabIndex = 0;
+  if (row.id === state.activeTweetId || row.rowId === state.activeTweetId) tr.classList.add('selected');
+
+  const selectTd = document.createElement('td');
+  selectTd.className = 'select-col';
+  const checkbox = document.createElement('input');
+  checkbox.type = 'checkbox';
+  checkbox.checked = state.selectedIds.has(row.rowId);
+  checkbox.setAttribute('aria-label', `Select ${row.text || row.id}`);
+  checkbox.addEventListener('click', (event) => event.stopPropagation());
+  checkbox.addEventListener('change', () => {
+    toggleSelection(row.rowId, checkbox.checked);
+    renderBulkBar(rows);
+  });
+  selectTd.appendChild(checkbox);
+  tr.appendChild(selectTd);
+
+  tr.append(
+    tweetCell(row),
+    textCell(authorLabel(row)),
+    textCell(row.source),
+    textCell(row.endpoint),
+    capturedCell(row),
+    statusCell(row.status),
+    mediaCell(row),
+    actionsCell(row),
+  );
+
+  tr.addEventListener('click', () => openTweetDrawer(row.id || row.rowId));
+  tr.addEventListener('keydown', (event) => handleRowKeydown(event, row));
+  return tr;
+}
+
+function tweetRowSignature(row) {
+  return JSON.stringify({
+    id: row.id,
+    text: row.text,
+    author: authorLabel(row),
+    source: row.source,
+    endpoint: row.endpoint,
+    capturedAt: row.capturedAt,
+    status: row.status,
+    media: summarizeMedia(row),
+    selected: state.selectedIds.has(row.rowId),
+    active: row.id === state.activeTweetId || row.rowId === state.activeTweetId,
+    reviewed: state.reviewedIds.has(row.rowId),
+    search: state.filters.search,
+    timestampFormat: state.settings.timestampFormat,
+  });
 }
 
 function renderTweetMessage(message) {
@@ -512,12 +1148,17 @@ function textCell(value) {
 
 function capturedCell(row) {
   const td = document.createElement('td');
-  const relative = document.createElement('div');
-  relative.textContent = formatRelative(row.capturedAt);
-  const exact = document.createElement('div');
-  exact.className = 'capture-exact';
-  exact.textContent = formatExactTime(row.capturedAt);
-  td.append(relative, exact);
+  if (state.settings.timestampFormat !== 'exact') {
+    const relative = document.createElement('div');
+    relative.textContent = formatRelative(row.capturedAt);
+    td.appendChild(relative);
+  }
+  if (state.settings.timestampFormat !== 'relative') {
+    const exact = document.createElement('div');
+    exact.className = 'capture-exact';
+    exact.textContent = formatExactTime(row.capturedAt);
+    td.appendChild(exact);
+  }
   return td;
 }
 
@@ -688,11 +1329,15 @@ function bindDrawerActions(row) {
   $('drawer-delete')?.addEventListener('click', () => removeRows([row.rowId]));
 }
 
-function renderEvents() {
+function renderEvents(options = {}) {
   populateEventFilters();
   const filtered = filterEvents();
-  els.eventsBody.innerHTML = '';
+  const accepted = state.events.filter(ev => ev.status === 'ACCEPTED').length;
+  const deduped = state.events.filter(ev => ev.status === 'DEDUPLICATED').length;
+  const errors = state.events.filter(ev => ev.status === 'PARSER_ERROR').length;
+  els.eventsSummary.textContent = `${state.events.length} events · ${accepted} accepted · ${deduped} deduplicated · ${errors} errors`;
   if (!filtered.length) {
+    els.eventsBody.innerHTML = '';
     const tr = document.createElement('tr');
     const td = document.createElement('td');
     td.colSpan = 7;
@@ -700,25 +1345,53 @@ function renderEvents() {
     td.innerHTML = '<strong>No live events.</strong><span class="empty-hint">Capture activity will appear here as the service worker records events.</span>';
     tr.appendChild(td);
     els.eventsBody.appendChild(tr);
+    return;
   }
+  const scrollTop = els.eventsWrap.scrollTop;
+  els.eventsBody.querySelectorAll('tr:not([data-row-id])').forEach(tr => tr.remove());
+  const existingRows = new Map([...els.eventsBody.querySelectorAll('tr[data-row-id]')]
+    .map(tr => [tr.dataset.rowId, tr]));
+  const visibleIds = new Set();
   for (const event of filtered) {
-    const tr = document.createElement('tr');
-    tr.append(
-      textCell(formatTime(event.timestamp)),
-      textCell(event.endpoint),
-      textCell(eventType(event)),
-      textCell(event.tweetLabel || event.tweetId || '—'),
-      statusCell(event.status),
-      textCell(event.reason || '—'),
-      eventActionsCell(event),
-    );
+    visibleIds.add(event.rowId);
+    const signature = eventRowSignature(event);
+    const existing = existingRows.get(event.rowId);
+    const tr = existing?.dataset.signature === signature ? existing : createEventRow(event, signature);
+    if (existing && existing !== tr) existing.replaceWith(tr);
     els.eventsBody.appendChild(tr);
   }
-  const accepted = state.events.filter(ev => ev.status === 'ACCEPTED').length;
-  const deduped = state.events.filter(ev => ev.status === 'DEDUPLICATED').length;
-  const errors = state.events.filter(ev => ev.status === 'PARSER_ERROR').length;
-  els.eventsSummary.textContent = `${state.events.length} events · ${accepted} accepted · ${deduped} deduplicated · ${errors} errors`;
-  if (els.autoScroll.checked) els.eventsWrap.scrollTop = els.eventsWrap.scrollHeight;
+  for (const [rowId, tr] of existingRows) {
+    if (!visibleIds.has(rowId)) tr.remove();
+  }
+  if (options.autoScroll && els.autoScroll.checked) els.eventsWrap.scrollTop = els.eventsWrap.scrollHeight;
+  else els.eventsWrap.scrollTop = scrollTop;
+}
+
+function createEventRow(event, signature) {
+  const tr = document.createElement('tr');
+  tr.dataset.rowId = event.rowId;
+  tr.dataset.signature = signature;
+  tr.append(
+    textCell(formatTime(event.timestamp)),
+    textCell(event.endpoint),
+    textCell(eventType(event)),
+    textCell(event.tweetLabel || event.tweetId || '—'),
+    statusCell(event.status),
+    textCell(event.reason || '—'),
+    eventActionsCell(event),
+  );
+  return tr;
+}
+
+function eventRowSignature(event) {
+  return JSON.stringify({
+    timestamp: event.timestamp,
+    endpoint: event.endpoint,
+    type: eventType(event),
+    label: event.tweetLabel || event.tweetId || '—',
+    status: event.status,
+    reason: event.reason || '—',
+  });
 }
 
 function eventActionsCell(event) {
@@ -780,6 +1453,10 @@ function renderHealth() {
   els.verboseToggle.checked = !!health.verboseLogging;
   els.verboseEndpointToggle.checked = !!health.verboseLogging;
   els.captureEnabledToggle.checked = !!health.captureEnabled;
+  state.settings.captureEnabled = !!health.captureEnabled;
+  state.settings.debugLogging = !!health.debugLogging;
+  state.settings.discoveryMode = !!health.verboseLogging;
+  state.settings.verboseEndpointLogging = !!health.verboseLogging;
   renderDiagnostics();
 
   const endpoints = health.discoveredEndpoints || [];
@@ -796,30 +1473,37 @@ function renderDiagnostics() {
 
 function renderActiveFilters() {
   const chips = [];
-  const add = (label, value) => {
-    if (value && value !== 'all') chips.push(`${label}: ${value}`);
+  const add = (key, label, value) => {
+    if (value && value !== 'all') chips.push({ key, label: `${label}: ${value}` });
   };
-  add('Status', state.filters.status);
-  add('Source', state.filters.source);
-  add('Endpoint', state.filters.endpoint);
-  add('Media', state.filters.media);
-  add('Author', state.filters.author && state.filters.author !== 'all' ? `@${state.filters.author}` : 'all');
-  add('Time', state.filters.time);
-  if (state.filters.search) chips.push(`Search: ${state.filters.search}`);
+  add('status', 'Status', state.filters.status);
+  add('source', 'Source', state.filters.source);
+  add('endpoint', 'Endpoint', state.filters.endpoint);
+  add('media', 'Media', selectedOptionLabel(els.mediaFilter, state.filters.media));
+  add('author', 'Author', state.filters.author && state.filters.author !== 'all' ? `@${state.filters.author}` : 'all');
+  add('time', 'Time', selectedOptionLabel(els.timeFilter, state.filters.time));
+  add('sort', 'Sort', selectedOptionLabel(els.sortFilter, state.filters.sort === 'newest' ? 'all' : state.filters.sort));
+  if (state.filters.search) chips.push({ key: 'search', label: `Search: ${state.filters.search}` });
   for (const [key, label] of [
-    ['hasLink', 'Has link'],
-    ['hasMedia', 'Has media'],
-    ['hasImage', 'Has image'],
-    ['hasVideo', 'Has video'],
     ['hasQuoted', 'Has quoted tweet'],
     ['hasReply', 'Has reply'],
     ['duplicateOnly', 'Duplicates only'],
     ['parserErrorOnly', 'Parser errors only'],
     ['newOnly', 'New tweets only'],
   ]) {
-    if (state.filters[key]) chips.push(label);
+    if (state.filters[key]) chips.push({ key, label });
   }
-  els.activeFilters.innerHTML = chips.map(chip => `<span class="filter-chip">${escapeHtml(chip)}</span>`).join('');
+  els.activeFilters.innerHTML = chips.map(chip => `
+    <span class="filter-chip">
+      ${escapeHtml(chip.label)}
+      <button class="filter-chip-remove" type="button" data-filter-key="${escapeAttr(chip.key)}" aria-label="Remove ${escapeAttr(chip.label)} filter">&times;</button>
+    </span>
+  `).join('');
+}
+
+function selectedOptionLabel(select, value) {
+  if (!value || value === 'all') return 'all';
+  return [...select.options].find(option => option.value === value)?.textContent || value;
 }
 
 function renderBulkBar(visibleRows = filterTweetRows(buildTweetRows())) {
@@ -926,11 +1610,11 @@ function switchTab(tab) {
   state.activeTab = tab;
   for (const btn of els.tabs) btn.classList.toggle('active', btn.dataset.tab === tab);
   for (const panel of els.tabPanels) panel.classList.toggle('active', panel.id === `tab-${tab}`);
-  els.defaultTab.value = tab;
 }
 
 function tabFromHash() {
-  const tab = location.hash.startsWith('#tab-') ? location.hash.slice('#tab-'.length) : '';
+  const raw = location.hash.replace(/^#/, '');
+  const tab = raw.startsWith('tab-') ? raw.slice('tab-'.length) : raw;
   return els.tabPanels.some(panel => panel.id === `tab-${tab}`) ? tab : '';
 }
 
@@ -1021,6 +1705,7 @@ function showToast(message) {
 }
 
 function bindEvents() {
+  initSearchableDropdowns();
   els.tabs.forEach(btn => btn.addEventListener('click', () => {
     history.replaceState(null, '', `#tab-${btn.dataset.tab}`);
     switchTab(btn.dataset.tab);
@@ -1045,10 +1730,6 @@ function bindEvents() {
   els.timeFilter.addEventListener('change', () => updateFilter('time', els.timeFilter.value));
   els.sortFilter.addEventListener('change', () => updateFilter('sort', els.sortFilter.value));
   for (const [id, key] of [
-    ['filter-link', 'hasLink'],
-    ['filter-media', 'hasMedia'],
-    ['filter-image', 'hasImage'],
-    ['filter-video', 'hasVideo'],
     ['filter-quoted', 'hasQuoted'],
     ['filter-reply', 'hasReply'],
     ['filter-duplicate', 'duplicateOnly'],
@@ -1058,6 +1739,11 @@ function bindEvents() {
     $(id).addEventListener('change', (event) => updateFilter(key, event.target.checked));
   }
   els.clearFilters.addEventListener('click', clearFilters);
+  els.activeFilters.addEventListener('click', (event) => {
+    const button = event.target?.closest?.('.filter-chip-remove');
+    if (!button) return;
+    resetFilter(button.dataset.filterKey);
+  });
   document.querySelectorAll('.sort-heading').forEach(btn => {
     btn.addEventListener('click', () => {
       const sort = btn.dataset.sort === 'newest' && state.filters.sort === 'newest' ? 'oldest' : btn.dataset.sort;
@@ -1108,20 +1794,26 @@ function bindEvents() {
   els.captureEnabledToggle.addEventListener('change', async () => {
     if (!!state.health?.captureEnabled !== els.captureEnabledToggle.checked) {
       await sendMessage({ type: 'TOGGLE_CAPTURE' });
+      await saveSettings({ captureEnabled: els.captureEnabledToggle.checked }, els.captureEnabledToggle.checked ? 'Capture enabled' : 'Capture paused');
       refreshHealth();
     }
   });
-  els.settingsAutoRefresh.addEventListener('change', () => {
-    els.tweetsAutoRefresh.checked = els.settingsAutoRefresh.checked;
-    els.eventsAutoRefresh.checked = els.settingsAutoRefresh.checked;
-  });
-  els.settingsAutoScroll.addEventListener('change', () => {
-    els.tweetsAutoScroll.checked = els.settingsAutoScroll.checked;
-    els.autoScroll.checked = els.settingsAutoScroll.checked;
-  });
+  const setAutoRefresh = (checked) => saveSettings({ autoRefresh: checked }, checked ? 'Auto-refresh enabled' : 'Auto-refresh disabled');
+  els.tweetsAutoRefresh.addEventListener('change', () => setAutoRefresh(els.tweetsAutoRefresh.checked));
+  els.eventsAutoRefresh.addEventListener('change', () => setAutoRefresh(els.eventsAutoRefresh.checked));
+  els.settingsAutoRefresh.addEventListener('change', () => setAutoRefresh(els.settingsAutoRefresh.checked));
+  const setAutoScroll = (checked) => saveSettings({ autoScrollLiveEvents: checked }, checked ? 'Auto-scroll enabled' : 'Auto-scroll disabled');
+  els.tweetsAutoScroll.addEventListener('change', () => setAutoScroll(els.tweetsAutoScroll.checked));
+  els.autoScroll.addEventListener('change', () => setAutoScroll(els.autoScroll.checked));
+  els.settingsAutoScroll.addEventListener('change', () => setAutoScroll(els.settingsAutoScroll.checked));
   els.densityComfortable.addEventListener('click', () => setDensity('comfortable'));
   els.densityCompact.addEventListener('click', () => setDensity('compact'));
-  els.defaultTab.addEventListener('change', () => switchTab(els.defaultTab.value));
+  els.defaultTab.addEventListener('change', () => saveSettings({ defaultTab: els.defaultTab.value }, 'Default tab saved'));
+  els.timestampFormat.addEventListener('change', () => {
+    saveSettings({ timestampFormat: els.timestampFormat.value }, 'Timestamp format saved');
+    renderAllTweets();
+  });
+  els.themeSelect.addEventListener('change', () => saveSettings({ theme: els.themeSelect.value }, 'Theme saved'));
   els.exportAllTweets.addEventListener('click', () => exportJson(buildTweetRows().map(exportTweet), 'xport-all-tweets.json'));
   els.exportAllEvents.addEventListener('click', () => exportJson(state.events, 'xport-live-events.json'));
   els.exportEvents.addEventListener('click', () => exportJson(state.events, 'xport-live-events.json'));
@@ -1142,6 +1834,7 @@ function bindEvents() {
   els.closeDrawer.addEventListener('click', closeTweetDrawer);
   els.drawerBackdrop.addEventListener('click', closeTweetDrawer);
   document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && state.activeDropdownId) closeOpenSearchableDropdown();
     if (event.key === 'Escape' && els.drawer.classList.contains('open')) closeTweetDrawer();
     if (event.key === '/' && document.activeElement?.tagName !== 'INPUT' && document.activeElement?.tagName !== 'TEXTAREA') {
       event.preventDefault();
@@ -1152,6 +1845,19 @@ function bindEvents() {
       const first = filterTweetRows(buildTweetRows())[0];
       if (first) openTweetDrawer(first.id || first.rowId);
     }
+  });
+  document.addEventListener('focusin', (event) => {
+    if (event.target?.matches?.('input, select, textarea')) markUserInteracting(2000);
+  });
+  document.addEventListener('focusout', () => {
+    setTimeout(applyPendingVisualRefresh, 150);
+  });
+  document.addEventListener('input', (event) => {
+    if (event.target?.matches?.('input, select, textarea')) markUserInteracting(2000);
+  });
+  document.addEventListener('pointerdown', (event) => {
+    if (!event.target?.closest?.('.searchable-select, .searchable-menu')) closeOpenSearchableDropdown();
+    if (event.target?.closest?.('.filter-panel, .settings-grid, .detail-drawer')) markUserInteracting(1500);
   });
 }
 
@@ -1165,6 +1871,28 @@ function updateEventFilter(key, value) {
   renderEvents();
 }
 
+function resetFilter(key) {
+  const defaults = {
+    search: '',
+    status: 'all',
+    source: 'all',
+    endpoint: 'all',
+    media: 'all',
+    author: 'all',
+    time: 'all',
+    sort: 'newest',
+    hasQuoted: false,
+    hasReply: false,
+    duplicateOnly: false,
+    parserErrorOnly: false,
+    newOnly: false,
+  };
+  if (!(key in defaults)) return;
+  state.filters[key] = defaults[key];
+  syncFilterInputs();
+  renderAllTweets();
+}
+
 function clearFilters() {
   Object.assign(state.filters, {
     search: '',
@@ -1175,40 +1903,47 @@ function clearFilters() {
     author: 'all',
     time: 'all',
     sort: 'newest',
-    hasLink: false,
-    hasMedia: false,
-    hasImage: false,
-    hasVideo: false,
     hasQuoted: false,
     hasReply: false,
     duplicateOnly: false,
     parserErrorOnly: false,
     newOnly: false,
   });
-  els.tweetSearch.value = '';
-  els.mediaFilter.value = 'all';
-  els.timeFilter.value = 'all';
-  els.sortFilter.value = 'newest';
-  for (const id of ['filter-link', 'filter-media', 'filter-image', 'filter-video', 'filter-quoted', 'filter-reply', 'filter-duplicate', 'filter-parser-error', 'filter-new']) {
-    $(id).checked = false;
-  }
+  syncFilterInputs();
   renderAllTweets();
+}
+
+function syncFilterInputs() {
+  els.tweetSearch.value = state.filters.search;
+  els.statusFilter.value = state.filters.status;
+  els.sourceFilter.value = state.filters.source;
+  els.endpointFilter.value = state.filters.endpoint;
+  els.authorFilter.value = state.filters.author;
+  els.mediaFilter.value = state.filters.media;
+  els.timeFilter.value = state.filters.time;
+  els.sortFilter.value = state.filters.sort;
+  $('filter-quoted').checked = !!state.filters.hasQuoted;
+  $('filter-reply').checked = !!state.filters.hasReply;
+  $('filter-duplicate').checked = !!state.filters.duplicateOnly;
+  $('filter-parser-error').checked = !!state.filters.parserErrorOnly;
+  $('filter-new').checked = !!state.filters.newOnly;
+  syncAllSearchableDropdowns();
 }
 
 async function setDebug(enabled) {
   await sendMessage({ type: 'SET_DEBUG', debugLogging: enabled });
+  await saveSettings({ debugLogging: enabled }, enabled ? 'Debug logging enabled' : 'Debug logging disabled');
   refreshHealth();
 }
 
 async function setVerbose(enabled) {
   await sendMessage({ type: 'SET_VERBOSE', verboseLogging: enabled });
+  await saveSettings({ discoveryMode: enabled, verboseEndpointLogging: enabled }, enabled ? 'Discovery mode enabled' : 'Discovery mode disabled');
   refreshHealth();
 }
 
-function setDensity(density) {
-  document.body.classList.toggle('compact', density === 'compact');
-  els.densityComfortable.classList.toggle('active', density === 'comfortable');
-  els.densityCompact.classList.toggle('active', density === 'compact');
+async function setDensity(density) {
+  await saveSettings({ density }, density === 'compact' ? 'Compact density applied' : 'Comfortable density applied');
 }
 
 function formatSandboxJson() {
@@ -1227,8 +1962,51 @@ function clearLiveEvents() {
 }
 
 async function refreshAll() {
+  updateRefreshState('Refreshing...');
   await Promise.all([refreshHealth(), refreshStoredTweets()]);
   refreshEvents();
+}
+
+function markUserInteracting(duration = 1200) {
+  state.interactingUntil = Date.now() + duration;
+  clearTimeout(state.interactionTimer);
+  state.interactionTimer = setTimeout(applyPendingVisualRefresh, duration + 50);
+}
+
+function shouldDeferVisualRefresh() {
+  const active = document.activeElement;
+  if (state.activeDropdownId) return true;
+  if (active?.matches?.('input, select, textarea')) return true;
+  if (Date.now() < state.interactingUntil) return true;
+  if (els.drawer.classList.contains('open') && els.drawer.scrollTop > 0) return true;
+  return false;
+}
+
+function applyPendingVisualRefresh() {
+  if (shouldDeferVisualRefresh()) return;
+  const pendingTweets = state.pendingVisualRefresh.storedTweets;
+  const pendingEvents = state.pendingVisualRefresh.events;
+  state.pendingVisualRefresh.storedTweets = null;
+  state.pendingVisualRefresh.events = null;
+  if (pendingTweets) applyStoredTweets(pendingTweets);
+  if (pendingEvents) applyEvents(pendingEvents);
+}
+
+function markUpdated() {
+  state.lastRefreshAt = Date.now();
+  updateRefreshState('just now');
+}
+
+function updateRefreshState(label) {
+  if (label === 'Refreshing...') {
+    els.headerRefreshState.textContent = label;
+    return;
+  }
+  if (label.startsWith('Auto-refresh')) {
+    els.headerRefreshState.textContent = label;
+    return;
+  }
+  els.headerRefreshState.textContent = label.startsWith('Last updated') ? label : `Last updated: ${label}`;
 }
 
 function mediaItems(row) {
@@ -1333,6 +2111,10 @@ function number(value) {
   return Number(value || 0).toLocaleString();
 }
 
+function setTextIfChanged(el, value) {
+  if (el.textContent !== value) el.textContent = value;
+}
+
 function unique(values) {
   return [...new Set(values.filter(Boolean))].sort((a, b) => String(a).localeCompare(String(b)));
 }
@@ -1366,27 +2148,46 @@ function escapeAttr(value) {
   return escapeHtml(value).replaceAll('`', '&#096;');
 }
 
-bindEvents();
-switchTab(tabFromHash() || state.activeTab);
-window.addEventListener('hashchange', () => switchTab(tabFromHash() || 'tweets'));
-refreshAll();
+async function init() {
+  await loadSettings();
+  bindEvents();
+  switchTab(tabFromHash() || state.settings.defaultTab || 'tweets');
+  window.addEventListener('hashchange', () => switchTab(tabFromHash() || state.settings.defaultTab || 'tweets'));
+  await refreshAll();
 
-setInterval(refreshHealth, 5000);
-setInterval(() => {
-  if (els.tweetsAutoRefresh.checked) refreshStoredTweets();
-  if (els.eventsAutoRefresh.checked) refreshEvents();
-}, 5000);
+  setInterval(refreshHealth, 5000);
+  setInterval(() => {
+    if (!state.settings.autoRefresh) {
+      updateRefreshState('Auto-refresh off');
+      return;
+    }
+    if (document.hidden) {
+      updateRefreshState('Auto-refresh paused while hidden');
+      return;
+    }
+    if (state.health && !state.health.captureEnabled) {
+      updateRefreshState('Auto-refresh paused while capture is paused');
+      return;
+    }
+    refreshStoredTweets({ deferable: true });
+    refreshEvents({ deferable: true });
+  }, 5000);
 
-traceStorage.get(['lastEvents'], (result) => {
-  state.events = normalizeEvents(result.lastEvents || []);
-  renderAllTweets();
-  renderEvents();
-});
+  traceStorage.get(['lastEvents'], (result) => {
+    applyEvents(normalizeEvents(result.lastEvents || []));
+  });
 
-chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === traceArea && changes.lastEvents && els.eventsAutoRefresh.checked) {
-    state.events = normalizeEvents(changes.lastEvents.newValue || []);
-    renderAllTweets();
-    renderEvents();
-  }
-});
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === traceArea && changes.lastEvents && state.settings.autoRefresh) {
+      const events = normalizeEvents(changes.lastEvents.newValue || []);
+      if (shouldDeferVisualRefresh()) {
+        state.pendingVisualRefresh.events = events;
+        updateRefreshState('Auto-refresh paused while editing');
+      } else {
+        applyEvents(events);
+      }
+    }
+  });
+}
+
+init();

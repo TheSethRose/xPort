@@ -74,7 +74,7 @@ Stored XPort captures only; no live X/Twitter requests
 - **Path validation:** When the user sets a custom media/debug directory, the service worker sends a `TEST_PATH` request to the HTTP daemon, which attempts `makedirs` + write/delete of a temp file before accepting the path.
 - **Error resilience:** The native host logs crashes to `~/.xport/host-error.log` with Python version and traceback. The HTTP daemon returns error status codes and logs startup diagnostics (Python version, output dir, token status). When the daemon is unreachable, the extension shows a red "!" badge and buffers tweets until the next successful reprobe (30s cooldown). The popup auto-refreshes every 2 seconds to reflect transport state changes.
 - **Daemon debug logging:** Set `XPORT_LOG_LEVEL=debug` to get per-request logging (method, path, duration, tweet counts, tracebacks). Configured via environment variable in the service template (launchd/systemd). Re-run `install.sh` after changing.
-- **Media tuning (env vars, all optional):** `XPORT_AUTO_STORE_IMAGES` defaults to true; `XPORT_TRANSCRIBE_COMMAND` configures the local transcription command; `XPORT_TRANSCRIBE_MODEL` defaults to `nvidia/parakeet-tdt-0.6b-v3`; `XPORT_TRANSCRIBE_MAX_DURATION_MS` defaults to `90000`; `XPORT_TRANSCRIBE_MAX_FILE_MB` defaults to `75`; `XPORT_IMAGE_FETCH_MAX_FILE_MB` defaults to `XPORT_MAX_FILE_MB` or `50`.
+- **Media tuning (env vars, all optional):** `XPORT_AUTO_STORE_IMAGES` defaults to true; `XPORT_TRANSCRIBE_COMMAND` configures the local transcription command; macOS/Linux installs auto-use `native-host/xport_transcribe_parakeet.sh` when `parakeet-mlx` and `ffmpeg` are on PATH and no command is set; `XPORT_TRANSCRIBE_MODEL` defaults to `nvidia/parakeet-tdt-0.6b-v3`; `XPORT_TRANSCRIBE_MAX_DURATION_MS` defaults to `90000`; `XPORT_TRANSCRIBE_MAX_FILE_MB` defaults to `75`; `XPORT_IMAGE_FETCH_MAX_FILE_MB` defaults to `XPORT_MAX_FILE_MB` or `50`.
 
 ## Stealth Constraints
 
@@ -108,7 +108,7 @@ XPort/
 │   ├── content-main.js        # MAIN world - fetch/XHR patching
 │   ├── content-bridge.js      # ISOLATED world - event relay
 │   ├── popup.html/js/css      # Extension popup (stats, pause/resume, output dir)
-│   ├── debug.html/js/css      # Debug dashboard (live events, transport health, debug/discovery toggles, parser sandbox)
+│   ├── debug.html/js/css      # Debug dashboard (captured tweets, live events, persisted display settings, transport health, parser sandbox)
 │   ├── icons/                 # Extension icons (16, 48, 128)
 │   └── lib/
 │       └── tweet-parser.js    # GraphQL response → normalized tweet objects
@@ -123,6 +123,7 @@ XPort/
     ├── xport_core.py              # Shared daemon helper logic
     ├── xport_host.py              # Native messaging host — token bootstrap only (Python, stdio)
     ├── xport_daemon.py            # HTTP daemon (127.0.0.1:17381)
+    ├── xport_transcribe_parakeet.sh # parakeet-mlx wrapper that prints transcript text to stdout
     ├── com.xport.daemon.plist     # launchd plist template (macOS)
     ├── com.xport.daemon.service   # systemd unit template (Linux)
     ├── com.xport.host.json        # Native messaging host manifest (Chrome)

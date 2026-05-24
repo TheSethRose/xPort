@@ -340,6 +340,10 @@ _transcriptions_lock = threading.Lock()
 _active_transcription_id = None
 
 
+class EmptyTranscriptError(RuntimeError):
+    pass
+
+
 def get_transcription_status(media_id):
     with _transcriptions_lock:
         info = _transcriptions.get(media_id)
@@ -379,6 +383,14 @@ def start_media_transcription(media_id, tweet_id, source_url, duration_ms=None):
         with _transcriptions_lock:
             _transcriptions[media_id] = {'status': 'skipped', 'error': f'duration exceeds {TRANSCRIBE_MAX_DURATION_MS}ms cap'}
         return {'ok': True, 'media_id': media_id, 'status': 'skipped'}
+    if not TRANSCRIBE_COMMAND:
+        error = 'XPORT_TRANSCRIBE_COMMAND is not configured'
+        _set_transcription_status(media_id, 'error', error=error)
+        try:
+            update_media_transcription_api(media_id, 'error', error=error, transcript_model=TRANSCRIPTION_MODEL)
+        except Exception as update_error:
+            _set_transcription_status(media_id, 'error', error=f'{error}; status update failed: {update_error}')
+        return {'ok': False, 'media_id': media_id, 'status': 'error', 'error': error}
 
     with _transcriptions_lock:
         if _active_transcription_id:
@@ -419,6 +431,12 @@ def _run_media_transcription(media_id, tweet_id, source_url):  # pragma: no cove
             transcript_text=transcript,
             transcript_model=TRANSCRIPTION_MODEL,
         )
+    except EmptyTranscriptError as e:
+        _set_transcription_status(media_id, 'skipped', error=str(e))
+        try:
+            update_media_transcription_api(media_id, 'skipped', error=str(e), transcript_model=TRANSCRIPTION_MODEL)
+        except Exception as update_error:
+            _set_transcription_status(media_id, 'error', error=f'{e}; status update failed: {update_error}')
     except Exception as e:
         _set_transcription_status(media_id, 'error', error=str(e))
         try:
@@ -480,7 +498,7 @@ def _run_transcription_command(media_path):
         raise RuntimeError(f'transcription command failed: {detail}' if detail else f'transcription command exited {proc.returncode}')
     transcript = proc.stdout.strip()
     if not transcript:
-        raise RuntimeError('transcription command returned empty transcript')
+        raise EmptyTranscriptError('transcription command returned empty transcript')
     return transcript
 
 

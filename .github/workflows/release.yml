@@ -29,6 +29,7 @@ jobs:
             native-host/xport_core.py \
             native-host/xport_host.py \
             native-host/xport_daemon.py \
+            native-host/xport_transcribe_parakeet.sh \
             native-host/com.xport.host.json \
             native-host/com.xport.daemon.plist \
             native-host/com.xport.daemon.service \

@@ -89,6 +89,7 @@ function ConvertTo-PSLiteral([string]$Value) {
 $XportLogLevel = if ($env:XPORT_LOG_LEVEL) { $env:XPORT_LOG_LEVEL } else { "info" }
 $XportApiUrl = if ($env:XPORT_API_URL) { $env:XPORT_API_URL } else { "" }
 $XportIngestToken = if ($env:XPORT_INGEST_TOKEN) { $env:XPORT_INGEST_TOKEN } else { "" }
+$XportTranscribeCommand = if ($env:XPORT_TRANSCRIBE_COMMAND) { $env:XPORT_TRANSCRIBE_COMMAND } else { "" }
 
 # Remove existing scheduled task if present
 if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
@@ -100,6 +101,7 @@ $DaemonCommand = @(
     "`$env:XPORT_LOG_LEVEL=$(ConvertTo-PSLiteral $XportLogLevel)",
     "`$env:XPORT_API_URL=$(ConvertTo-PSLiteral $XportApiUrl)",
     "`$env:XPORT_INGEST_TOKEN=$(ConvertTo-PSLiteral $XportIngestToken)",
+    "`$env:XPORT_TRANSCRIBE_COMMAND=$(ConvertTo-PSLiteral $XportTranscribeCommand)",
     "& $(ConvertTo-PSLiteral $PythonExe) $(ConvertTo-PSLiteral $DaemonPy)"
 ) -join "; "
 $Action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command $DaemonCommand"

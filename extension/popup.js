@@ -344,7 +344,7 @@ function pollTranscription(mediaId) {
         showTranscriptionResult('error', 'Skipped');
       } else if (resp.status === 'error') {
         clearInterval(pollTimer);
-        showTranscriptionResult('error', 'Error');
+        showTranscriptionResult('error', resp.error || 'Error');
       }
     });
   }, 1000);

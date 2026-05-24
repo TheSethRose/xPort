@@ -434,6 +434,36 @@ class TestAuthorizedRequest:
         assert body == {'ok': True, 'media_id': '55:0', 'status': 'queued'}
         assert captured == [('55:0', '55', 'https://video.twimg.com/a.mp4', 1000)]
 
+    def test_transcribe_media_returns_service_error_for_preflight_failure(self, daemon_url, monkeypatch):
+        """Configuration failures should not look like queued work."""
+        def fake_start(media_id, tweet_id, source_url, duration_ms):
+            return {
+                'ok': False,
+                'media_id': media_id,
+                'status': 'error',
+                'error': 'XPORT_TRANSCRIBE_COMMAND is not configured',
+            }
+
+        monkeypatch.setattr(xport_daemon, 'start_media_transcription', fake_start)
+        status, body = _post(
+            daemon_url,
+            '/transcribe-media',
+            body={
+                'media_id': '55:0',
+                'tweet_id': '55',
+                'source_url': 'https://video.twimg.com/a.mp4',
+                'duration_ms': 1000,
+            },
+            token=TEST_TOKEN,
+        )
+        assert status == 503
+        assert body == {
+            'ok': False,
+            'media_id': '55:0',
+            'status': 'error',
+            'error': 'XPORT_TRANSCRIBE_COMMAND is not configured',
+        }
+
     def test_tweets_image_download_flag_no_longer_controls_image_queue(self, daemon_url, monkeypatch):
         """Photo storage is automatic; legacy image_download values do not change it."""
         import shutil

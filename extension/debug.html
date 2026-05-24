@@ -14,6 +14,7 @@
           <span id="header-transport">HTTP</span>
           <span id="header-capture">Capture Enabled</span>
           <span id="header-last-tweet">Last tweet: —</span>
+          <span id="header-refresh-state">Last updated: —</span>
         </div>
       </div>
       <div class="header-side">
@@ -60,7 +61,7 @@
         <div class="filter-panel">
           <div class="search-row">
             <input type="search" id="tweet-search" placeholder="Search tweets..." spellcheck="false">
-            <button id="clear-filters" class="small-btn">Clear all</button>
+            <button id="clear-filters" class="small-btn">Clear filters</button>
           </div>
           <div class="filter-row">
             <select id="status-filter" aria-label="Status filter"><option value="all">All statuses</option></select>
@@ -95,10 +96,6 @@
           <details class="more-filters">
             <summary>More Filters</summary>
             <div class="checkbox-grid">
-              <label><input type="checkbox" id="filter-link"> Has link</label>
-              <label><input type="checkbox" id="filter-media"> Has media</label>
-              <label><input type="checkbox" id="filter-image"> Has image</label>
-              <label><input type="checkbox" id="filter-video"> Has video</label>
               <label><input type="checkbox" id="filter-quoted"> Has quoted tweet</label>
               <label><input type="checkbox" id="filter-reply"> Has reply</label>
               <label><input type="checkbox" id="filter-duplicate"> Duplicates only</label>
@@ -267,24 +264,32 @@
               <button id="density-comfortable" class="active" data-density="comfortable">Comfortable</button>
               <button id="density-compact" data-density="compact">Compact</button>
             </div>
-            <label class="setting-line">Default tab <select id="default-tab"><option value="tweets">Tweets</option><option value="events">Live Events</option><option value="parser">Parser</option><option value="debug">Debug</option><option value="settings">Settings</option></select></label>
-            <label class="setting-line">Timestamp format <select disabled><option>Relative + exact</option></select></label>
-            <label class="setting-line">Theme <select disabled><option>Charcoal</option></select></label>
+            <label class="setting-line">Default opening tab <select id="default-tab"><option value="tweets">Tweets</option><option value="events">Live Events</option><option value="parser">Parser</option><option value="debug">Debug</option><option value="settings">Settings</option></select></label>
+            <p class="setting-help">Default opening tab is used only when opening the dashboard without a specific tab link.</p>
+            <label class="setting-line">Timestamp format <select id="timestamp-format"><option value="relative_exact">Relative + exact</option><option value="relative">Relative only</option><option value="exact">Exact only</option></select></label>
+            <label class="setting-line">Theme <select id="theme-select"><option value="charcoal">Charcoal</option></select></label>
           </section>
           <section class="panel">
             <h2>Data</h2>
             <div class="stacked-actions">
-              <button id="export-all-tweets" class="small-btn">Export all tweets</button>
-              <button id="export-all-events" class="small-btn">Export all events</button>
-              <button id="clear-view-tweets" class="small-btn">Clear hidden tweets</button>
+              <button id="export-all-tweets" class="small-btn">Export tweets</button>
+              <button id="export-all-events" class="small-btn">Export events</button>
+            </div>
+          </section>
+          <section class="panel danger-panel">
+            <h2>Danger Zone</h2>
+            <div class="stacked-actions">
+              <button id="clear-view-tweets" class="small-btn danger-btn">Clear filtered-out tweets</button>
               <button id="clear-live-events" class="small-btn">Clear live events</button>
-              <button id="reset-session-view" class="small-btn">Reset session view</button>
+              <button id="reset-session-view" class="small-btn">Reset session filters</button>
             </div>
           </section>
         </div>
       </section>
     </main>
   </div>
+
+  <div id="dropdown-layer" class="dropdown-layer" aria-live="polite"></div>
 
   <aside id="tweet-drawer" class="detail-drawer" aria-hidden="true">
     <div class="drawer-header">

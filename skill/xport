@@ -3,6 +3,7 @@
 
 import argparse
 import base64
+from collections import Counter
 import json
 import os
 import sys
@@ -69,6 +70,9 @@ def build_parser():
     recent = subparsers.add_parser('recent', parents=[common], help='List recent captured tweets')
     add_filters(recent)
 
+    digest = subparsers.add_parser('digest', parents=[common], help='Package captured tweets for an agent-written topic digest')
+    add_filters(digest, default_limit=500)
+
     get = subparsers.add_parser('get', parents=[common], help='Fetch one tweet by ID')
     get.add_argument('tweet_id')
 
@@ -88,12 +92,12 @@ def build_parser():
     return parser
 
 
-def add_filters(parser):
+def add_filters(parser, default_limit=50):
     parser.add_argument('--author', help='Author username, with or without @')
     parser.add_argument('--since', help='Lower bound for created_at/captured_at')
     parser.add_argument('--until', help='Upper bound for created_at/captured_at')
     parser.add_argument('--endpoint', help='Source GraphQL endpoint')
-    parser.add_argument('--limit', type=int, default=50)
+    parser.add_argument('--limit', type=int, default=default_limit)
     parser.add_argument('--offset', type=int, default=0)
 
 
@@ -139,7 +143,10 @@ def run_api(args):
         'include_raw': args.include_raw,
         'include_media': args.include_media,
     }
-    return request_api(args.api_url, args.token, '/api/tweets', params).get('tweets', [])
+    tweets = request_api(args.api_url, args.token, '/api/tweets', params).get('tweets', [])
+    if args.command == 'digest':
+        return build_digest(tweets, args)
+    return tweets
 
 
 def request_api(api_url, token, path, params):
@@ -257,7 +264,34 @@ def run_db(args):
         tweets = [json_ready(row) for row in rows]
         if args.include_media and tweets:
             attach_db_media(conn, tweets)
+        if args.command == 'digest':
+            return build_digest(tweets, args)
         return tweets
+
+
+def build_digest(tweets, args):
+    author_counts = Counter(tweet.get('author_username') or 'unknown' for tweet in tweets)
+    endpoint_counts = Counter(tweet.get('source_endpoint') or 'unknown' for tweet in tweets)
+    return {
+        'tweet_count': len(tweets),
+        'filters': {
+            'author': args.author,
+            'since': args.since,
+            'until': args.until,
+            'endpoint': args.endpoint,
+            'limit': args.limit,
+            'offset': args.offset,
+        },
+        'top_authors': [
+            {'author_username': author, 'tweet_count': count}
+            for author, count in author_counts.most_common(20)
+        ],
+        'top_endpoints': [
+            {'source_endpoint': endpoint, 'tweet_count': count}
+            for endpoint, count in endpoint_counts.most_common()
+        ],
+        'tweets': tweets,
+    }
 
 
 def build_tweet_query(args):

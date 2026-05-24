@@ -135,7 +135,7 @@ Tweet capture requires a hosted XPort API backed by PostgreSQL. The local direct
 - Google Chrome
 - Python 3
 - macOS, Linux, or Windows
-- Optional: `XPORT_TRANSCRIBE_COMMAND` for local video transcription. The intended model is `nvidia/parakeet-tdt-0.6b-v3`; XPort calls your configured local command and stores stdout as the transcript.
+- Optional: `XPORT_TRANSCRIBE_COMMAND` for local video transcription. The intended model is `nvidia/parakeet-tdt-0.6b-v3`; XPort calls your configured local command and stores stdout as the transcript. On macOS/Linux, if `parakeet-mlx` and `ffmpeg` are installed and no command is configured, the installer uses `native-host/xport_transcribe_parakeet.sh`.
 
 ### Chrome quick start
 
@@ -226,7 +226,7 @@ Tweet capture will fail closed until `XPORT_API_URL` and `XPORT_INGEST_TOKEN` ar
 | Custom media/debug directory | Set it in the popup, or set `XPORT_OUTPUT_DIR` before running the installer |
 | Debug logging | Use the debug dashboard toggle, or set `XPORT_LOG_LEVEL=debug` and re-run the installer |
 | Image saving | Automatic for captured `pbs.twimg.com` photos after successful Postgres ingest; set `XPORT_AUTO_STORE_IMAGES=false` before running the installer to disable |
-| Video transcription | Configure `XPORT_TRANSCRIBE_COMMAND`, then use the popup/debug dashboard/CLI transcribe action |
+| Video transcription | Install `parakeet-mlx` plus `ffmpeg`, or configure `XPORT_TRANSCRIBE_COMMAND`, re-run the installer, then use the popup/debug dashboard/CLI transcribe action |
 | PostgreSQL capture | Set `XPORT_API_URL` and `XPORT_INGEST_TOKEN`, then re-run the installer |
 | XPort skill CLI | Use `skill/xport` after captures exist in the hosted API or PostgreSQL |
 
@@ -444,7 +444,7 @@ XPort/
 │   ├── content-main.js        # MAIN world — patches fetch/XHR, emits events
 │   ├── content-bridge.js      # ISOLATED world — relays events to service worker
 │   ├── popup.html/js/css      # Extension popup UI
-│   ├── debug.html/js/css      # Debug dashboard (live events, transport health, parser sandbox)
+│   ├── debug.html/js/css      # Debug dashboard (captured tweets, live events, persisted display settings, transport health, parser sandbox)
 │   ├── icons/                 # Extension icons
 │   └── lib/                   # Shared utilities
 ├── api/

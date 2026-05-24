@@ -122,3 +122,18 @@ def test_cli_media_lists_tweet_media_from_api():
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)[0]['media_id'] == '123:0'
     assert CliApiHandler.requests[0]['path'] == '/api/tweets/123/media'
+
+
+def test_cli_digest_packages_tweets_for_agent_summary():
+    with api_server() as server:
+        result = run_cli(['digest', '--since', '2026-05-24T00:00:00Z', '--api-url', server, '--token', 'read-token'])
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload['tweet_count'] == 1
+    assert payload['filters']['since'] == '2026-05-24T00:00:00Z'
+    assert payload['top_authors'] == [{'author_username': 'seth', 'tweet_count': 1}]
+    assert payload['tweets'][0]['text'] == 'saved from extension'
+    assert CliApiHandler.requests[0]['path'].startswith('/api/tweets?')
+    assert 'since=2026-05-24T00%3A00%3A00Z' in CliApiHandler.requests[0]['path']
+    assert 'limit=500' in CliApiHandler.requests[0]['path']

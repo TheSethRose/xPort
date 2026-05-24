@@ -254,7 +254,12 @@ class DaemonHandler(BaseHTTPRequestHandler):
                 body.get('source_url') or body.get('sourceUrl'),
                 body.get('duration_ms') or body.get('durationMs'),
             )
-            status_code = 409 if result.get('status') == 'busy' else 200
+            if result.get('status') == 'busy':
+                status_code = 409
+            elif result.get('ok') is not True:
+                status_code = 503
+            else:
+                status_code = 200
             self._send_json(result, status_code)
         except ValueError as e:
             self._send_json({'ok': False, 'error': str(e)}, 400)

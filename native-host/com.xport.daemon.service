@@ -9,6 +9,7 @@ Environment=PATH=__PATH__
 Environment=XPORT_LOG_LEVEL=__LOG_LEVEL__
 Environment=XPORT_API_URL=__API_URL__
 Environment=XPORT_INGEST_TOKEN=__INGEST_TOKEN__
+Environment=XPORT_TRANSCRIBE_COMMAND=__TRANSCRIBE_COMMAND__
 Restart=always
 RestartSec=5
 

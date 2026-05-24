@@ -44,6 +44,7 @@ Direct database mode needs `psycopg` available in the Python environment. API mo
 | --- | --- |
 | Search stored tweets | `skill/xport search "query" --limit 20` |
 | Recent stored tweets | `skill/xport recent --author seth --since 2026-05-01T00:00:00Z` |
+| Agent-ready daily digest data | `skill/xport digest --since 2026-05-24T00:00:00Z` |
 | Fetch one tweet | `skill/xport get 1234567890 --include-raw` |
 | Fetch one tweet with media | `skill/xport get 1234567890 --include-media` |
 | List media for a tweet | `skill/xport media 1234567890` |
@@ -57,10 +58,11 @@ Useful filters: `--author`, `--since`, `--until`, `--endpoint`, `--limit`, `--of
 ## Agent Pattern
 
 1. Use `stats` to check coverage when the request is broad.
-2. Use `search` or `recent` with tight filters.
-3. Use `get --include-media` when media/transcript context matters.
-4. Use `get --include-raw` only when normalized fields are not enough.
-5. Cite that results are from stored XPort captures, not live X/Twitter.
+2. Use `digest --since <UTC-midnight>` for daily topic summaries. It returns `tweet_count`, filter metadata, top authors, source endpoints, and the captured tweet rows so the agent can write the narrative summary.
+3. Use `search` or `recent` with tight filters.
+4. Use `get --include-media` when media/transcript context matters.
+5. Use `get --include-raw` only when normalized fields are not enough.
+6. Cite that results are from stored XPort captures, not live X/Twitter.
 
 ## Common Mistakes
 

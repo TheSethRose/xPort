@@ -306,3 +306,75 @@ class TestImageAssetJobs:
             'id': '123',
             'media': [{'type': 'video', 'url': 'https://video.twimg.com/a.mp4'}],
         }]) == 0
+
+
+class TestMediaTranscription:
+    def test_missing_command_fails_before_queueing(self, monkeypatch):
+        captured = []
+        monkeypatch.setattr(xport_core, 'TRANSCRIBE_COMMAND', '')
+        monkeypatch.setattr(
+            xport_core,
+            'update_media_transcription_api',
+            lambda *args, **kwargs: captured.append((args, kwargs)),
+        )
+        xport_core._active_transcription_id = None
+        xport_core._transcriptions.clear()
+
+        result = xport_core.start_media_transcription(
+            '123:0',
+            '123',
+            'https://video.twimg.com/ext_tw_video/123/pu/vid/avc1/a.mp4',
+            1000,
+        )
+
+        assert result == {
+            'ok': False,
+            'media_id': '123:0',
+            'status': 'error',
+            'error': 'XPORT_TRANSCRIBE_COMMAND is not configured',
+        }
+        assert xport_core.get_transcription_status('123:0') == {
+            'status': 'error',
+            'error': 'XPORT_TRANSCRIBE_COMMAND is not configured',
+        }
+        assert captured == [
+            (
+                ('123:0', 'error'),
+                {
+                    'error': 'XPORT_TRANSCRIBE_COMMAND is not configured',
+                    'transcript_model': xport_core.TRANSCRIPTION_MODEL,
+                },
+            )
+        ]
+        assert xport_core._active_transcription_id is None
+
+    def test_empty_transcript_marks_job_skipped(self, monkeypatch):
+        captured = []
+        monkeypatch.setattr(xport_core, 'TRANSCRIBE_COMMAND', 'transcriber')
+        monkeypatch.setattr(xport_core, 'update_media_transcription_api', lambda *args, **kwargs: captured.append((args, kwargs)))
+        monkeypatch.setattr(xport_core, '_download_temp_media', lambda source_url, tmpdir, max_bytes: ('/tmp/source.wav', 1234))
+        monkeypatch.setattr(
+            xport_core,
+            '_run_transcription_command',
+            lambda media_path: (_ for _ in ()).throw(xport_core.EmptyTranscriptError('transcription command returned empty transcript')),
+        )
+        xport_core._active_transcription_id = '123:0'
+        xport_core._transcriptions.clear()
+
+        xport_core._run_media_transcription('123:0', '123', 'https://video.twimg.com/a.mp4')
+
+        assert xport_core.get_transcription_status('123:0') == {
+            'status': 'skipped',
+            'error': 'transcription command returned empty transcript',
+        }
+        assert captured == [
+            (('123:0', 'transcribing'), {}),
+            (
+                ('123:0', 'skipped'),
+                {
+                    'error': 'transcription command returned empty transcript',
+                    'transcript_model': xport_core.TRANSCRIPTION_MODEL,
+                },
+            ),
+        ]
+        assert xport_core._active_transcription_id is None

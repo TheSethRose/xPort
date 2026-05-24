@@ -21,6 +21,8 @@
         <string>__API_URL__</string>
         <key>XPORT_INGEST_TOKEN</key>
         <string>__INGEST_TOKEN__</string>
+        <key>XPORT_TRANSCRIBE_COMMAND</key>
+        <string>__TRANSCRIBE_COMMAND__</string>
     </dict>
     <key>RunAtLoad</key>
     <true/>

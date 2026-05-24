@@ -135,6 +135,10 @@ if [ "$OS" = "Darwin" ]; then
   XPORT_LOG_LEVEL="${XPORT_LOG_LEVEL:-info}"
   XPORT_API_URL="${XPORT_API_URL:-}"
   XPORT_INGEST_TOKEN="${XPORT_INGEST_TOKEN:-}"
+  XPORT_TRANSCRIBE_COMMAND="${XPORT_TRANSCRIBE_COMMAND:-}"
+  if [ -z "$XPORT_TRANSCRIBE_COMMAND" ] && command -v parakeet-mlx >/dev/null 2>&1 && command -v ffmpeg >/dev/null 2>&1; then
+    XPORT_TRANSCRIBE_COMMAND="${SCRIPT_DIR}/xport_transcribe_parakeet.sh"
+  fi
 
   # Substitute plist template
   mkdir -p "$HOME/Library/LaunchAgents"
@@ -146,6 +150,7 @@ if [ "$OS" = "Darwin" ]; then
     -e "s|__LOG_LEVEL__|${XPORT_LOG_LEVEL}|g" \
     -e "s|__API_URL__|${XPORT_API_URL}|g" \
     -e "s|__INGEST_TOKEN__|${XPORT_INGEST_TOKEN}|g" \
+    -e "s|__TRANSCRIBE_COMMAND__|${XPORT_TRANSCRIBE_COMMAND}|g" \
     "$PLIST_TEMPLATE" > "$PLIST_DEST"
 
   # Load daemon
@@ -189,6 +194,10 @@ if [ "$OS" = "Linux" ]; then
   XPORT_LOG_LEVEL="${XPORT_LOG_LEVEL:-info}"
   XPORT_API_URL="${XPORT_API_URL:-}"
   XPORT_INGEST_TOKEN="${XPORT_INGEST_TOKEN:-}"
+  XPORT_TRANSCRIBE_COMMAND="${XPORT_TRANSCRIBE_COMMAND:-}"
+  if [ -z "$XPORT_TRANSCRIBE_COMMAND" ] && command -v parakeet-mlx >/dev/null 2>&1 && command -v ffmpeg >/dev/null 2>&1; then
+    XPORT_TRANSCRIBE_COMMAND="${SCRIPT_DIR}/xport_transcribe_parakeet.sh"
+  fi
 
   # Substitute service template
   mkdir -p "$SERVICE_DIR"
@@ -200,6 +209,7 @@ if [ "$OS" = "Linux" ]; then
     -e "s|__LOG_LEVEL__|${XPORT_LOG_LEVEL}|g" \
     -e "s|__API_URL__|${XPORT_API_URL}|g" \
     -e "s|__INGEST_TOKEN__|${XPORT_INGEST_TOKEN}|g" \
+    -e "s|__TRANSCRIBE_COMMAND__|${XPORT_TRANSCRIBE_COMMAND}|g" \
     "$SERVICE_TEMPLATE" > "$SERVICE_DEST"
 
   # Reload and enable
@@ -227,6 +237,12 @@ echo ""
 echo "PostgreSQL capture API (re-run install after setting):"
 echo "  export XPORT_API_URL=https://xport.example.com"
 echo "  export XPORT_INGEST_TOKEN=..."
+echo ""
+echo "Video transcription (re-run install after setting):"
+echo "  export XPORT_TRANSCRIBE_COMMAND=/path/to/transcriber"
+if [ -z "${XPORT_TRANSCRIBE_COMMAND:-}" ] && command -v parakeet-mlx >/dev/null 2>&1 && command -v ffmpeg >/dev/null 2>&1; then
+  echo "  parakeet-mlx detected; installer will use native-host/xport_transcribe_parakeet.sh by default"
+fi
 if [ -z "${XPORT_API_URL:-}" ] || [ -z "${XPORT_INGEST_TOKEN:-}" ]; then
   echo ""
   echo "Warning: tweet capture requires XPORT_API_URL and XPORT_INGEST_TOKEN."
