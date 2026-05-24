@@ -328,9 +328,9 @@ async function refreshHealth() {
 async function refreshStoredTweets(options = {}) {
   if (state.storedTweetsRefreshInFlight) return;
   state.storedTweetsRefreshInFlight = true;
-  updateRefreshState('Refreshing...');
+  if (!options.incremental) updateRefreshState('Refreshing...');
   try {
-    if (options.incremental && state.storedTweets.length > 0) {
+    if (options.incremental) {
       const resp = await sendMessage({
         type: 'GET_STORED_TWEETS',
         limit: STORED_TWEET_RECENT_PAGE_SIZE,
@@ -341,7 +341,8 @@ async function refreshStoredTweets(options = {}) {
         updateRefreshState('Update failed');
         return;
       }
-      const tweets = mergeStoredTweets((resp.tweets || []).map(normalizeStoredTweet), state.storedTweets);
+      const existingTweets = state.pendingVisualRefresh.storedTweets || state.storedTweets;
+      const tweets = mergeStoredTweets((resp.tweets || []).map(normalizeStoredTweet), existingTweets);
       if (options.deferable && shouldDeferVisualRefresh()) {
         state.pendingVisualRefresh.storedTweets = tweets;
         updateRefreshState('Auto-refresh paused while editing');
@@ -1436,7 +1437,7 @@ function drawerTranscriptionItemHtml(item) {
         <dt>Status</dt><dd>${escapeHtml(transcriptStatusLabel(status))}</dd>
         <dt>Model</dt><dd>${escapeHtml(item.transcript_model || '—')}</dd>
         <dt>Transcribed</dt><dd>${escapeHtml(formatFullDate(item.transcribed_at))}</dd>
-        <dt>Error</dt><dd>${escapeHtml(item.transcript_error || '—')}</dd>
+        <dt>Message</dt><dd>${escapeHtml(item.transcript_error || '—')}</dd>
       </dl>
       ${transcript ? `<pre class="transcript-text">${escapeHtml(transcript)}</pre>` : '<p class="empty-note">No transcript text stored.</p>'}
     </article>

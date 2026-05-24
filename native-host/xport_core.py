@@ -330,7 +330,6 @@ _NO_REDIRECT_OPENER = urllib.request.build_opener(_NoRedirectHandler())
 # --- On-demand transcription ---
 
 TRANSCRIPTION_MODEL = os.environ.get('XPORT_TRANSCRIBE_MODEL', 'nvidia/parakeet-tdt-0.6b-v3')
-TRANSCRIBE_MAX_DURATION_MS = _env_int('XPORT_TRANSCRIBE_MAX_DURATION_MS', 90_000)
 TRANSCRIBE_MAX_FILE_MB = _env_int('XPORT_TRANSCRIBE_MAX_FILE_MB', 75)
 TRANSCRIBE_REQUEST_TIMEOUT_S = _env_float('XPORT_TRANSCRIBE_REQUEST_TIMEOUT_SECONDS', 60.0)
 TRANSCRIBE_COMMAND = os.environ.get('XPORT_TRANSCRIBE_COMMAND', '').strip()
@@ -367,22 +366,8 @@ def start_media_transcription(media_id, tweet_id, source_url, duration_ms=None):
         raise ValueError('tweet_id is required')
     if not source_url:
         raise ValueError('source_url is required')
-    if duration_ms is not None:
-        try:
-            duration_ms = int(duration_ms)
-        except (TypeError, ValueError):
-            duration_ms = None
     if not _is_allowed_media_url(source_url, ALLOWED_VIDEO_HOSTS):
         raise ValueError('source_url host is not allowed')
-    if duration_ms is not None and duration_ms > TRANSCRIBE_MAX_DURATION_MS:
-        update_media_transcription_api(
-            media_id,
-            'skipped',
-            error=f'duration exceeds {TRANSCRIBE_MAX_DURATION_MS}ms cap',
-        )
-        with _transcriptions_lock:
-            _transcriptions[media_id] = {'status': 'skipped', 'error': f'duration exceeds {TRANSCRIBE_MAX_DURATION_MS}ms cap'}
-        return {'ok': True, 'media_id': media_id, 'status': 'skipped'}
     if not TRANSCRIBE_COMMAND:
         error = 'XPORT_TRANSCRIBE_COMMAND is not configured'
         _set_transcription_status(media_id, 'error', error=error)

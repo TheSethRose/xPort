@@ -309,6 +309,39 @@ class TestImageAssetJobs:
 
 
 class TestMediaTranscription:
+    def test_long_duration_queues_without_duration_cap(self, monkeypatch):
+        captured = []
+        started = []
+
+        class FakeThread:
+            def __init__(self, target, args, daemon, name):
+                self.target = target
+                self.args = args
+                self.daemon = daemon
+                self.name = name
+
+            def start(self):
+                started.append((self.target, self.args, self.daemon, self.name))
+
+        monkeypatch.setattr(xport_core, 'TRANSCRIBE_COMMAND', 'transcriber')
+        monkeypatch.setattr(xport_core, 'update_media_transcription_api', lambda *args, **kwargs: captured.append((args, kwargs)))
+        monkeypatch.setattr(xport_core.threading, 'Thread', FakeThread)
+        xport_core._active_transcription_id = None
+        xport_core._transcriptions.clear()
+
+        result = xport_core.start_media_transcription(
+            '123:0',
+            '123',
+            'https://video.twimg.com/ext_tw_video/123/pu/vid/avc1/a.mp4',
+            405845,
+        )
+
+        assert result == {'ok': True, 'media_id': '123:0', 'status': 'queued'}
+        assert xport_core.get_transcription_status('123:0') == {'status': 'queued', 'error': None}
+        assert captured == [(('123:0', 'queued'), {})]
+        assert len(started) == 1
+        assert started[0][1] == ('123:0', '123', 'https://video.twimg.com/ext_tw_video/123/pu/vid/avc1/a.mp4')
+
     def test_missing_command_fails_before_queueing(self, monkeypatch):
         captured = []
         monkeypatch.setattr(xport_core, 'TRANSCRIBE_COMMAND', '')
