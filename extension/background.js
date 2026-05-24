@@ -553,6 +553,8 @@ function pushRecentCapturedTweet(tweet) {
     id: tweet.id || null,
     author: username || tweet.author?.display_name || '@unknown',
     text: typeof tweet.text === 'string' ? tweet.text.replace(/\s+/g, ' ').trim() : '',
+    mediaTypes: Array.isArray(tweet.media) ? tweet.media.map(item => item?.type).filter(Boolean) : [],
+    urlCount: Array.isArray(tweet.urls) ? tweet.urls.length : 0,
     capturedAt,
   });
   if (recentCapturedTweets.length > MAX_POPUP_RECENT_TWEETS) {

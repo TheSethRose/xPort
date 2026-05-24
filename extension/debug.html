@@ -2,38 +2,38 @@
 <html>
 <head>
   <meta charset="utf-8">
-  <title>XPort Debug Dashboard</title>
+  <title>XPort Dashboard</title>
   <link rel="stylesheet" href="debug.css">
 </head>
 <body>
   <div class="container">
     <header class="app-header">
-      <div>
-        <h1>XPort Debug Dashboard</h1>
+      <div class="header-main">
+        <h1>XPort Dashboard</h1>
         <div class="header-meta">
-          <span id="header-transport">HTTP</span>
-          <span id="header-capture">Capture Enabled</span>
-          <span id="header-last-tweet">Last tweet: —</span>
-          <span id="header-refresh-state">Last updated: —</span>
+          <span id="header-transport" data-icon="server">HTTP</span>
+          <span id="header-capture" data-icon="radio">Capture Enabled</span>
+          <span id="header-last-tweet" data-icon="message">Last tweet: —</span>
+          <span id="header-refresh-state" data-icon="clock">Last updated: —</span>
         </div>
       </div>
       <div class="header-side">
         <div id="header-status" class="connection-pill">Disconnected</div>
         <div class="header-actions">
-          <button id="pause-capture" class="small-btn">Pause</button>
-          <button id="refresh-all" class="small-btn">Refresh</button>
-          <button id="export-visible" class="small-btn">Export</button>
-          <button id="open-settings" class="small-btn">Settings</button>
+          <button id="pause-capture" class="small-btn" data-icon="pause">Pause</button>
+          <button id="refresh-all" class="small-btn" data-icon="refresh">Refresh</button>
+          <button id="export-visible" class="small-btn" data-icon="download">Export</button>
+          <button id="open-settings" class="small-btn" data-icon="settings">Settings</button>
         </div>
       </div>
     </header>
 
     <nav class="tabs" aria-label="Dashboard sections">
-      <button class="tab-btn active" data-tab="tweets">Tweets</button>
-      <button class="tab-btn" data-tab="events">Live Events</button>
-      <button class="tab-btn" data-tab="parser">Parser</button>
-      <button class="tab-btn" data-tab="debug">Debug</button>
-      <button class="tab-btn" data-tab="settings">Settings</button>
+      <button class="tab-btn active" data-tab="tweets" data-icon="message">Tweets</button>
+      <button class="tab-btn" data-tab="events" data-icon="activity">Live Events</button>
+      <button class="tab-btn" data-tab="parser" data-icon="code">Parser</button>
+      <button class="tab-btn" data-tab="debug" data-icon="bug">Debug</button>
+      <button class="tab-btn" data-tab="settings" data-icon="settings">Settings</button>
     </nav>
 
     <main>
@@ -50,18 +50,18 @@
         </div>
 
         <div class="metrics-grid">
-          <div class="metric-card"><span>Captured Tweets</span><strong id="metric-captured">0</strong><small>total</small></div>
-          <div class="metric-card"><span>Accepted</span><strong id="metric-accepted">0</strong><small>new tweets</small></div>
-          <div class="metric-card"><span>Deduplicated</span><strong id="metric-deduped">0</strong><small>repeated</small></div>
-          <div class="metric-card"><span>Parser Errors</span><strong id="metric-errors">0</strong><small>issues</small></div>
-          <div class="metric-card"><span>With Media</span><strong id="metric-media">0</strong><small>tweets</small></div>
-          <div class="metric-card"><span>Sources</span><strong id="metric-sources">0</strong><small id="metric-source-list">active</small></div>
+          <div class="metric-card" data-icon="message"><span>Captured Tweets</span><strong id="metric-captured">0</strong><small>total</small></div>
+          <div class="metric-card" data-icon="check-circle"><span>Accepted</span><strong id="metric-accepted">0</strong><small>new tweets</small></div>
+          <div class="metric-card" data-icon="repeat"><span>Deduplicated</span><strong id="metric-deduped">0</strong><small>repeated</small></div>
+          <div class="metric-card" data-icon="alert"><span>Parser Errors</span><strong id="metric-errors">0</strong><small>issues</small></div>
+          <div class="metric-card" data-icon="image"><span>With Media</span><strong id="metric-media">0</strong><small>tweets</small></div>
+          <div class="metric-card" data-icon="network"><span>Sources</span><strong id="metric-sources">0</strong><small id="metric-source-list">active</small></div>
         </div>
 
         <div class="filter-panel">
           <div class="search-row">
             <input type="search" id="tweet-search" placeholder="Search tweets..." spellcheck="false">
-            <button id="clear-filters" class="small-btn">Clear filters</button>
+            <button id="clear-filters" class="small-btn" data-icon="x">Clear filters</button>
           </div>
           <div class="filter-row">
             <select id="status-filter" aria-label="Status filter"><option value="all">All statuses</option></select>
@@ -131,14 +131,10 @@
             <thead>
               <tr>
                 <th class="select-col"><input type="checkbox" id="select-all-tweets" aria-label="Select all visible tweets"></th>
-                <th>Tweet</th>
-                <th><button class="sort-heading" data-sort="author">Author</button></th>
-                <th><button class="sort-heading" data-sort="source">Source</button></th>
-                <th>Endpoint</th>
-                <th><button class="sort-heading" data-sort="newest">Captured</button></th>
-                <th><button class="sort-heading" data-sort="status">Status</button></th>
-                <th><button class="sort-heading" data-sort="media">Media</button></th>
-                <th>Actions</th>
+                <th><span class="th-label" data-icon="message">Tweet</span></th>
+                <th><button class="sort-heading" data-sort="author" data-icon="user">Author</button></th>
+                <th><span class="th-label" data-icon="bar-chart">Metrics</span></th>
+                <th><span class="th-label" data-icon="bolt">Actions</span></th>
               </tr>
             </thead>
             <tbody id="tweets-body"></tbody>

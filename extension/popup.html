@@ -9,25 +9,35 @@
     <header class="header">
       <h1>XPort</h1>
       <div class="header-actions">
-        <button id="open-settings" class="utility-btn" type="button" aria-label="Open settings">Settings</button>
+        <button id="open-settings" class="utility-btn icon-btn" type="button" aria-label="Open settings" title="Settings">
+          <span data-icon="settings" aria-hidden="true"></span>
+        </button>
         <span id="status-pill" class="status-pill">
           <span class="status-dot" aria-hidden="true"></span>
+          <span id="status-icon" aria-hidden="true"></span>
           <span id="status-label">Live</span>
         </span>
       </div>
     </header>
-    <div id="status" class="status" role="status"></div>
+    <div id="status" class="status" role="status">
+      <span id="status-banner-icon" aria-hidden="true"></span>
+      <span id="status-text"></span>
+    </div>
     <div id="transport-error" class="transport-error" style="display: none;"></div>
+    <div id="system-state" class="system-state" aria-label="System state"></div>
     <div class="stats" aria-label="Tweet capture counts">
       <button id="session-card" class="stat" type="button" aria-label="Open dashboard for current session tweets">
+        <span class="stat-icon" data-icon="message-square" aria-hidden="true"></span>
         <span class="stat-value" id="session-count">0</span>
         <span class="stat-label">Session Tweets</span>
       </button>
       <button id="alltime-card" class="stat" type="button" aria-label="Open dashboard for all captured tweets">
+        <span class="stat-icon" data-icon="database" aria-hidden="true"></span>
         <span class="stat-value" id="alltime-count">0</span>
         <span class="stat-label">All-Time Tweets</span>
       </button>
       <button id="error-card" class="stat stat-error" type="button" aria-label="Open dashboard capture errors" style="display: none;">
+        <span class="stat-icon" data-icon="triangle-alert" aria-hidden="true"></span>
         <span class="stat-value" id="error-count">0</span>
         <span class="stat-label">Errors</span>
       </button>
@@ -36,7 +46,10 @@
     <section class="recent-section" aria-labelledby="recent-title">
       <div class="section-heading">
         <h2 id="recent-title">Recent Tweets</h2>
-        <button id="view-all-tweets" class="text-link" type="button">View all tweets</button>
+        <button id="view-all-tweets" class="text-link" type="button" aria-label="View all captured tweets">
+          <span data-icon="external-link" aria-hidden="true"></span>
+          <span>View all</span>
+        </button>
       </div>
       <div id="recent-tweets" class="recent-list"></div>
     </section>
@@ -47,29 +60,29 @@
       <button id="transcribe-btn" class="download-btn" type="button">Transcribe Video</button>
     </div>
     <div class="settings">
-      <label class="settings-label" for="output-dir">Media & debug save directory</label>
+      <label class="settings-label" for="output-dir">
+        <span data-icon="folder" aria-hidden="true"></span>
+        <span>Media & debug save directory</span>
+      </label>
       <p class="settings-help">Used for media downloads, debug logs, and exports.</p>
       <div class="settings-row">
-        <input type="text" id="output-dir" placeholder="~/Downloads/xport" spellcheck="false">
-        <button id="save-dir" class="save-btn" type="button">Save</button>
+        <div class="input-shell">
+          <span data-icon="folder" aria-hidden="true"></span>
+          <input type="text" id="output-dir" placeholder="~/Downloads/xport" spellcheck="false">
+        </div>
+        <button id="save-dir" class="save-btn" type="button">
+          <span data-icon="save" aria-hidden="true"></span>
+          <span>Save</span>
+        </button>
       </div>
       <div id="dir-feedback" class="dir-feedback" aria-live="polite"></div>
     </div>
     <div class="nav-actions" aria-label="Dashboard links">
-      <button id="open-tweets" class="dashboard-btn primary" type="button" aria-label="Open Tweet Dashboard">Open Tweet Dashboard</button>
-      <button id="open-debug" class="dashboard-btn secondary" type="button" aria-label="Open Debug Dashboard">Debug Dashboard</button>
+      <button id="open-tweets" class="dashboard-btn primary" type="button" aria-label="Open Tweet Dashboard">
+        <span data-icon="message-square" aria-hidden="true"></span>
+        <span>Open Tweet Dashboard</span>
+      </button>
     </div>
-    <details class="debug-summary">
-      <summary>Debug status</summary>
-      <dl>
-        <div><dt>Transport</dt><dd id="debug-transport">—</dd></div>
-        <div><dt>Capture</dt><dd id="debug-capture">—</dd></div>
-        <div><dt>Buffer</dt><dd id="debug-buffer">—</dd></div>
-        <div><dt>Parser errors</dt><dd id="debug-parser-errors">0</dd></div>
-        <div><dt>Discovery</dt><dd id="debug-discovery">Off</dd></div>
-      </dl>
-      <button id="open-debug-summary" class="dashboard-btn secondary" type="button">Open Debug</button>
-    </details>
   </div>
   <script src="popup.js"></script>
 </body>

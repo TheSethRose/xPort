@@ -185,12 +185,59 @@ const STORED_TWEET_RECENT_PAGE_SIZE = 100;
 const STORED_TWEET_MAX_OFFSET = 100000;
 const searchableDropdowns = new Map();
 
+const ICONS = {
+  activity: '<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>',
+  alert: '<path d="m21.7 18-8-14a2 2 0 0 0-3.4 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.7-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
+  bolt: '<path d="M13 2 3 14h8l-1 8 10-12h-8l1-8Z"/>',
+  braces: '<path d="M8 3H7a2 2 0 0 0-2 2v4a2 2 0 0 1-2 2 2 2 0 0 1 2 2v4a2 2 0 0 0 2 2h1"/><path d="M16 21h1a2 2 0 0 0 2-2v-4a2 2 0 0 1 2-2 2 2 0 0 1-2-2V7a2 2 0 0 0-2-2h-1"/>',
+  bug: '<path d="m8 2 1.8 1.8"/><path d="M14.2 3.8 16 2"/><path d="M9 7h6"/><path d="M8 7v8a4 4 0 0 0 8 0V7"/><path d="M5 7h14"/><path d="M5 11h3"/><path d="M16 11h3"/><path d="M6 18h3"/><path d="M15 18h3"/>',
+  check: '<path d="M20 6 9 17l-5-5"/>',
+  'check-circle': '<path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="10"/>',
+  'circle-dot': '<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/>',
+  'circle-slash': '<circle cx="12" cy="12" r="10"/><path d="m4.9 4.9 14.2 14.2"/>',
+  clock: '<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>',
+  code: '<path d="m16 18 6-6-6-6"/><path d="m8 6-6 6 6 6"/>',
+  copy: '<rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>',
+  'copy-check': '<rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/><path d="m12 15 2 2 4-4"/>',
+  database: '<ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.7 4 3 9 3s9-1.3 9-3V5"/><path d="M3 12c0 1.7 4 3 9 3s9-1.3 9-3"/>',
+  download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/>',
+  ellipsis: '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
+  'external-link': '<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
+  folder: '<path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7l-2-2H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2Z"/>',
+  'bar-chart': '<path d="M4 21V10"/><path d="M12 21V3"/><path d="M20 21v-7"/>',
+  bookmark: '<path d="M6 3h12a1 1 0 0 1 1 1v17l-7-4-7 4V4a1 1 0 0 1 1-1Z"/>',
+  heart: '<path d="M19.5 12.6 12 20l-7.5-7.4a5 5 0 0 1 7.1-7.1l.4.4.4-.4a5 5 0 1 1 7.1 7.1Z"/>',
+  image: '<rect width="18" height="18" x="3" y="3" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21"/>',
+  info: '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',
+  layers: '<path d="m12 2 10 5-10 5L2 7l10-5Z"/><path d="m2 17 10 5 10-5"/><path d="m2 12 10 5 10-5"/>',
+  link: '<path d="M10 13a5 5 0 0 0 7.1 0l2-2a5 5 0 0 0-7.1-7.1l-1.1 1.1"/><path d="M14 11a5 5 0 0 0-7.1 0l-2 2A5 5 0 0 0 12 20.1l1.1-1.1"/>',
+  message: '<path d="M21 15a4 4 0 0 1-4 4H7l-4 4V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z"/>',
+  network: '<rect x="16" y="16" width="6" height="6" rx="1"/><rect x="2" y="2" width="6" height="6" rx="1"/><rect x="16" y="2" width="6" height="6" rx="1"/><path d="M5 8v3a2 2 0 0 0 2 2h10a2 2 0 0 1 2 2v1"/><path d="M19 8v8"/>',
+  pause: '<path d="M6 4h4v16H6z"/><path d="M14 4h4v16h-4z"/>',
+  play: '<rect width="18" height="18" x="3" y="3" rx="2"/><path d="m10 8 6 4-6 4Z"/>',
+  radio: '<path d="M4.9 19.1a10 10 0 0 1 0-14.2"/><path d="M7.8 16.2a6 6 0 0 1 0-8.5"/><circle cx="12" cy="12" r="2"/><path d="M16.2 7.8a6 6 0 0 1 0 8.5"/><path d="M19.1 4.9a10 10 0 0 1 0 14.2"/>',
+  quote: '<path d="M8 11H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h4v6a4 4 0 0 1-4 4"/><path d="M20 11h-4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h4v6a4 4 0 0 1-4 4"/>',
+  refresh: '<path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/>',
+  repeat: '<path d="m17 2 4 4-4 4"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><path d="m7 22-4-4 4-4"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/>',
+  route: '<circle cx="6" cy="19" r="3"/><circle cx="18" cy="5" r="3"/><path d="M12 19h3a3 3 0 0 0 0-6H9a3 3 0 0 1 0-6h3"/>',
+  search: '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
+  server: '<rect width="20" height="8" x="2" y="2" rx="2"/><rect width="20" height="8" x="2" y="14" rx="2"/><path d="M6 6h.01"/><path d="M6 18h.01"/>',
+  settings: '<path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.6-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9l-.1-.1A2 2 0 1 1 7.1 4l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.6V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1A2 2 0 1 1 19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.6 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/>',
+  sparkles: '<path d="m12 3-1.9 5.8L4 11l6.1 2.2L12 19l1.9-5.8L20 11l-6.1-2.2L12 3Z"/><path d="M5 3v4"/><path d="M3 5h4"/><path d="M19 17v4"/><path d="M17 19h4"/>',
+  terminal: '<path d="m4 17 6-6-6-6"/><path d="M12 19h8"/>',
+  trash: '<path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/>',
+  user: '<path d="M19 21a7 7 0 0 0-14 0"/><circle cx="12" cy="7" r="4"/>',
+  users: '<path d="M16 21a5 5 0 0 0-8 0"/><circle cx="12" cy="7" r="4"/><path d="M22 21a4 4 0 0 0-3-3.9"/><path d="M2 21a4 4 0 0 1 3-3.9"/><path d="M17 3.1a4 4 0 0 1 0 7.8"/><path d="M7 3.1a4 4 0 0 0 0 7.8"/>',
+  x: '<circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/>',
+};
+
 const dropdownConfigs = {
   status: {
     filterKey: 'status',
     select: els.statusFilter,
     wrapperClass: 'status-select',
     allLabel: 'All statuses',
+    icon: 'check-circle',
     placeholder: 'Search statuses...',
     ariaLabel: 'Search statuses',
     emptyName: 'statuses',
@@ -201,6 +248,7 @@ const dropdownConfigs = {
     select: els.sourceFilter,
     wrapperClass: 'source-select',
     allLabel: 'All sources',
+    icon: 'network',
     placeholder: 'Search sources...',
     ariaLabel: 'Search sources',
     emptyName: 'sources',
@@ -212,6 +260,7 @@ const dropdownConfigs = {
     select: els.endpointFilter,
     wrapperClass: 'endpoint-select',
     allLabel: 'All endpoints',
+    icon: 'route',
     placeholder: 'Search endpoints...',
     ariaLabel: 'Search endpoints',
     emptyName: 'endpoints',
@@ -223,6 +272,7 @@ const dropdownConfigs = {
     select: els.mediaFilter,
     wrapperClass: 'media-select',
     allLabel: 'All media',
+    icon: 'image',
     placeholder: 'Search media...',
     ariaLabel: 'Search media',
     emptyName: 'media options',
@@ -233,6 +283,7 @@ const dropdownConfigs = {
     select: els.transcriptionFilter,
     wrapperClass: 'transcription-select',
     allLabel: 'All transcription',
+    icon: 'terminal',
     placeholder: 'Search transcription...',
     ariaLabel: 'Search transcription',
     emptyName: 'transcription states',
@@ -243,6 +294,7 @@ const dropdownConfigs = {
     select: els.authorFilter,
     wrapperClass: 'author-select',
     allLabel: 'All authors',
+    icon: 'user',
     placeholder: 'Search authors...',
     ariaLabel: 'Search authors',
     emptyName: 'authors',
@@ -251,12 +303,112 @@ const dropdownConfigs = {
     ignoreAt: true,
     alwaysSearchable: true,
   },
+  time: {
+    filterKey: 'time',
+    select: els.timeFilter,
+    wrapperClass: 'time-select',
+    allLabel: 'All time',
+    icon: 'clock',
+    placeholder: 'Search time...',
+    ariaLabel: 'Search time filters',
+    emptyName: 'time filters',
+    searchableThreshold: Number.POSITIVE_INFINITY,
+  },
+  sort: {
+    filterKey: 'sort',
+    select: els.sortFilter,
+    wrapperClass: 'sort-select',
+    allLabel: 'Newest first',
+    icon: 'refresh',
+    placeholder: 'Search sorting...',
+    ariaLabel: 'Search sort options',
+    emptyName: 'sort options',
+    searchableThreshold: Number.POSITIVE_INFINITY,
+  },
+  eventStatus: {
+    select: els.eventStatusFilter,
+    wrapperClass: 'status-select',
+    allLabel: 'All statuses',
+    icon: 'check-circle',
+    placeholder: 'Search statuses...',
+    ariaLabel: 'Search event statuses',
+    emptyName: 'statuses',
+    searchableThreshold: SEARCHABLE_THRESHOLD,
+  },
+  eventEndpoint: {
+    select: els.eventEndpointFilter,
+    wrapperClass: 'endpoint-select',
+    allLabel: 'All endpoints',
+    icon: 'route',
+    placeholder: 'Search endpoints...',
+    ariaLabel: 'Search event endpoints',
+    emptyName: 'endpoints',
+    searchableThreshold: SEARCHABLE_THRESHOLD,
+    alwaysSearchable: true,
+  },
+  eventReason: {
+    select: els.eventReasonFilter,
+    wrapperClass: 'reason-select',
+    allLabel: 'All reasons',
+    icon: 'info',
+    placeholder: 'Search reasons...',
+    ariaLabel: 'Search event reasons',
+    emptyName: 'reasons',
+    searchableThreshold: SEARCHABLE_THRESHOLD,
+  },
 };
 
 function sendMessage(message) {
   return new Promise((resolve) => {
     chrome.runtime.sendMessage(message, (resp) => resolve(resp));
   });
+}
+
+function iconHtml(name, className = '') {
+  const path = ICONS[name];
+  if (!path) return '';
+  const cls = ['svg-icon', className].filter(Boolean).join(' ');
+  return `<svg class="${cls}" aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${path}</svg>`;
+}
+
+function iconNode(name, className = '') {
+  const template = document.createElement('template');
+  template.innerHTML = iconHtml(name, className);
+  return template.content.firstElementChild || document.createTextNode('');
+}
+
+function appendIconLabel(parent, icon, label, options = {}) {
+  parent.textContent = '';
+  parent.appendChild(iconNode(icon));
+  const span = document.createElement('span');
+  span.className = options.compactOptional ? 'compact-optional' : '';
+  span.textContent = label;
+  parent.appendChild(span);
+}
+
+function iconLabelHtml(icon, label, options = {}) {
+  const cls = options.compactOptional ? ' class="compact-optional"' : '';
+  return `${iconHtml(icon)}<span${cls}>${escapeHtml(label)}</span>`;
+}
+
+function decorateStaticIcons(root = document) {
+  root.querySelectorAll('[data-icon]').forEach((el) => {
+    if (el.dataset.iconDecorated) return;
+    if (el.classList.contains('metric-card')) {
+      el.prepend(iconNode(el.dataset.icon));
+      el.dataset.iconDecorated = 'true';
+      return;
+    }
+    const label = el.textContent.trim();
+    appendIconLabel(el, el.dataset.icon, label);
+    el.dataset.iconDecorated = 'true';
+  });
+}
+
+function setIconText(el, label, icon = el?.dataset?.icon) {
+  if (!el) return;
+  if (icon) appendIconLabel(el, icon, label);
+  else setTextIfChanged(el, label);
 }
 
 function getLocalSettings() {
@@ -454,6 +606,7 @@ function normalizeStoredTweet(tweet) {
     endpoint: tweet.source_endpoint || raw.source_endpoint || 'unknown',
     capturedAt: tweet.captured_at || raw.captured_at || tweet.created_at || raw.created_at || null,
     createdAt: tweet.created_at || raw.created_at || null,
+    metrics: normalizeMetrics(tweet.metrics || raw.metrics),
     status: 'ACCEPTED',
     reason: '',
     url: tweet.url || raw.url || '',
@@ -517,6 +670,7 @@ function eventToTweetRow(event) {
     endpoint: event.endpoint,
     capturedAt: new Date(event.timestamp).toISOString(),
     createdAt: null,
+    metrics: normalizeMetrics(event.metrics),
     status: event.status,
     reason: event.reason || '',
     url: event.tweetId ? `https://x.com/i/status/${event.tweetId}` : '',
@@ -535,6 +689,23 @@ function eventToTweetRow(event) {
 function relatedEvents(tweetId) {
   if (!tweetId) return [];
   return state.events.filter(event => event.tweetId === tweetId);
+}
+
+function normalizeMetrics(metrics = {}) {
+  return {
+    replies: numericMetric(metrics.replies),
+    retweets: numericMetric(metrics.retweets),
+    likes: numericMetric(metrics.likes),
+    quotes: numericMetric(metrics.quotes),
+    bookmarks: numericMetric(metrics.bookmarks),
+    views: numericMetric(metrics.views),
+  };
+}
+
+function numericMetric(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
 }
 
 function renderAllTweets(options = {}) {
@@ -589,8 +760,9 @@ function syncDropdownSelect(select) {
     searchText: option.dataset.searchText || '',
     selected: option.value === select.value,
     all: option.value === 'all',
+    icon: optionIcon(dropdown, option.value, option.textContent || option.value),
   }));
-  dropdown.button.textContent = selectedOptionLabel(select, select.value);
+  renderSearchableTrigger(dropdown);
   if (dropdown.menu) {
     dropdown.pendingSync = true;
     return;
@@ -758,7 +930,10 @@ function openSearchableDropdown(dropdown) {
       renderSearchableOptions(dropdown, { preferSelected: true });
     });
     input.addEventListener('keydown', (event) => handleSearchKeydown(event, dropdown));
-    menu.appendChild(input);
+    const inputWrap = document.createElement('div');
+    inputWrap.className = 'dropdown-search-wrap';
+    inputWrap.append(iconNode('search'), input);
+    menu.appendChild(inputWrap);
     dropdown.input = input;
   } else {
     dropdown.input = null;
@@ -929,7 +1104,8 @@ function renderSearchableOption(dropdown, option, index) {
 
   const check = document.createElement('span');
   check.className = 'option-check';
-  check.textContent = option.value === dropdown.select.value ? '✓' : '';
+  if (option.value === dropdown.select.value) check.appendChild(iconNode('check'));
+  else check.appendChild(iconNode(option.icon));
   const body = document.createElement('span');
   const label = document.createElement('span');
   label.className = 'option-label';
@@ -943,6 +1119,32 @@ function renderSearchableOption(dropdown, option, index) {
   }
   button.append(check, body);
   return button;
+}
+
+function renderSearchableTrigger(dropdown) {
+  const label = selectedOptionTriggerLabel(dropdown);
+  dropdown.button.textContent = '';
+  dropdown.button.append(iconNode(dropdown.config.icon || 'search'), document.createTextNode(label));
+}
+
+function selectedOptionTriggerLabel(dropdown) {
+  const option = [...dropdown.select.options].find(item => item.value === dropdown.select.value);
+  if (!dropdown.select.value || dropdown.select.value === 'all') return option?.textContent || dropdown.config.allLabel || 'All';
+  return option?.textContent || dropdown.select.value;
+}
+
+function optionIcon(dropdown, value, label) {
+  const id = dropdown.id;
+  const normalized = String(value || label || '').toLowerCase();
+  if (id.includes('author')) return value === 'all' ? 'users' : 'user';
+  if (id.includes('source')) return 'network';
+  if (id.includes('endpoint')) return 'route';
+  if (id.includes('time')) return 'clock';
+  if (id.includes('sort')) return 'refresh';
+  if (id.includes('transcription')) return normalized.includes('error') ? 'alert' : normalized.includes('done') || normalized.includes('text') ? 'check-circle' : 'terminal';
+  if (id.includes('media')) return mediaIconFromLabel(label || value);
+  if (id.includes('status')) return statusIcon(value || label);
+  return dropdown.config.icon || 'search';
 }
 
 function selectedOptionIndex(dropdown) {
@@ -1165,11 +1367,7 @@ function createTweetRow(row, rows, signature) {
   tr.append(
     tweetCell(row),
     textCell(authorLabel(row)),
-    textCell(row.source),
-    textCell(row.endpoint),
-    capturedCell(row),
-    statusCell(row.status),
-    mediaCell(row),
+    metricsCell(row),
     actionsCell(row),
   );
 
@@ -1188,6 +1386,7 @@ function tweetRowSignature(row) {
     capturedAt: row.capturedAt,
     status: row.status,
     media: summarizeMedia(row),
+    metrics: row.metrics,
     selected: state.selectedIds.has(row.rowId),
     active: row.id === state.activeTweetId || row.rowId === state.activeTweetId,
     reviewed: state.reviewedIds.has(row.rowId),
@@ -1200,12 +1399,12 @@ function renderTweetMessage(message) {
   els.tweetsBody.innerHTML = '';
   const tr = document.createElement('tr');
   const td = document.createElement('td');
-  td.colSpan = 9;
+  td.colSpan = 5;
   td.className = 'empty-state';
   const emptyAction = message === 'No tweets captured yet.'
-    ? '<div class="empty-actions"><button id="empty-check" class="small-btn">Check connection</button><a class="small-btn action-link" href="https://x.com" target="_blank" rel="noreferrer">Open X</a><button id="empty-events" class="small-btn">View Live Events</button></div>'
+    ? `<div class="empty-actions"><button id="empty-check" class="small-btn">${iconLabelHtml('server', 'Check connection')}</button><a class="small-btn action-link" href="https://x.com" target="_blank" rel="noreferrer">${iconLabelHtml('external-link', 'Open X')}</a><button id="empty-events" class="small-btn">${iconLabelHtml('activity', 'View Live Events')}</button></div>`
     : '';
-  td.innerHTML = `<strong>${escapeHtml(message)}</strong><span class="empty-hint">Once XPort detects timeline activity, captured tweets will appear here.</span>${emptyAction}`;
+  td.innerHTML = `${iconHtml('message', 'empty-icon')}<strong>${escapeHtml(message)}</strong><span class="empty-hint">Captured tweets will appear here when XPort detects activity.</span>${emptyAction}`;
   tr.appendChild(td);
   els.tweetsBody.appendChild(tr);
   $('empty-check')?.addEventListener('click', refreshHealth);
@@ -1257,22 +1456,120 @@ function capturedCell(row) {
   return td;
 }
 
+function metricsCell(row) {
+  const td = document.createElement('td');
+  td.className = 'metrics-cell';
+  const group = document.createElement('div');
+  group.className = 'tweet-metrics';
+  group.setAttribute('aria-label', metricsAriaLabel(row.metrics));
+  for (const item of metricItems(row.metrics)) {
+    const metric = document.createElement('span');
+    metric.className = `tweet-metric tweet-metric-${item.key}`;
+    metric.title = `${item.fullLabel}: ${metricFullValue(item.value)}`;
+    metric.append(iconNode(item.icon), document.createTextNode(formatMetric(item.value)));
+    group.appendChild(metric);
+  }
+  td.appendChild(group);
+  return td;
+}
+
+function metricItems(metrics = {}) {
+  return [
+    { key: 'replies', icon: 'message', label: 'Replies', fullLabel: 'Replies', value: metrics.replies },
+    { key: 'retweets', icon: 'repeat', label: 'Reposts', fullLabel: 'Reposts', value: metrics.retweets },
+    { key: 'likes', icon: 'heart', label: 'Likes', fullLabel: 'Likes', value: metrics.likes },
+    { key: 'quotes', icon: 'quote', label: 'Quotes', fullLabel: 'Quote tweets', value: metrics.quotes },
+    { key: 'bookmarks', icon: 'bookmark', label: 'Bookmarks', fullLabel: 'Bookmarks', value: metrics.bookmarks },
+    { key: 'views', icon: 'bar-chart', label: 'Views', fullLabel: 'Views', value: metrics.views },
+  ];
+}
+
+function metricsAriaLabel(metrics) {
+  return metricItems(metrics)
+    .map(item => `${metricFullValue(item.value)} ${item.label.toLowerCase()}`)
+    .join(', ');
+}
+
+function formatMetric(value) {
+  if (value === null || value === undefined) return '-';
+  const number = Number(value);
+  if (!Number.isFinite(number)) return '-';
+  if (Math.abs(number) >= 1000000) return `${trimMetric(number / 1000000)}M`;
+  if (Math.abs(number) >= 1000) return `${trimMetric(number / 1000)}K`;
+  return String(number);
+}
+
+function trimMetric(value) {
+  return value >= 10 ? String(Math.round(value)) : value.toFixed(1).replace(/\.0$/, '');
+}
+
+function metricFullValue(value) {
+  return value === null || value === undefined ? 'unknown' : Number(value).toLocaleString();
+}
+
 function statusCell(status) {
   const td = document.createElement('td');
   const chip = document.createElement('span');
   chip.className = `status-chip status-${status}`;
-  chip.textContent = statusLabel(status);
+  chip.title = statusLabel(status);
+  chip.append(iconNode(statusIcon(status)), statusChipText(status));
   td.appendChild(chip);
   return td;
 }
 
+function statusChipText(status) {
+  const label = document.createElement('span');
+  label.className = 'status-label compact-optional';
+  label.textContent = statusLabel(status);
+  return label;
+}
+
 function mediaCell(row) {
   const td = document.createElement('td');
+  const items = mediaPills(row);
+  for (const item of items) td.appendChild(item);
+  return td;
+}
+
+function mediaPills(row) {
+  const summary = summarizeMedia(row);
+  const media = mediaItems(row);
+  const pills = [];
+  const add = (icon, label) => {
+    const pill = document.createElement('span');
+    pill.className = 'media-pill';
+    pill.title = label;
+    pill.append(iconNode(icon), mediaPillText(label));
+    pills.push(pill);
+  };
+  if (summary === '—') {
+    add('circle-slash', 'No media');
+    return pills;
+  }
+  if (summary === 'Multiple') {
+    add('layers', 'Multiple media items');
+    return pills;
+  }
+  if (media.some(item => (item.media_type || item.type) === 'photo')) add('image', 'Contains image');
+  if (media.some(item => (item.media_type || item.type) === 'video')) add('play', 'Contains video');
+  if (media.some(item => (item.media_type || item.type) === 'animated_gif')) add('sparkles', 'Contains GIF');
+  if (hasLink(row)) add('link', 'Contains link');
+  return pills.length ? pills : [mediaFallbackPill(summary)];
+}
+
+function mediaPillText(label) {
+  const span = document.createElement('span');
+  span.className = 'media-label compact-optional';
+  span.textContent = label.replace(/^Contains /, '');
+  return span;
+}
+
+function mediaFallbackPill(summary) {
   const pill = document.createElement('span');
   pill.className = 'media-pill';
-  pill.textContent = summarizeMedia(row);
-  td.appendChild(pill);
-  return td;
+  pill.title = summary;
+  pill.append(iconNode(mediaIconFromLabel(summary)), mediaPillText(summary));
+  return pill;
 }
 
 function actionsCell(row) {
@@ -1280,20 +1577,14 @@ function actionsCell(row) {
   const wrap = document.createElement('div');
   wrap.className = 'row-actions';
   wrap.append(
-    actionButton('Details', () => openTweetDrawer(row.id || row.rowId)),
-    actionButton('Copy URL', () => copyText(row.url || '', 'Tweet URL copied')),
-    actionButton('Copy Text', () => copyText(row.text || '', 'Tweet text copied')),
-    actionButton('Copy JSON', () => copyJson(row.raw || row, 'Tweet JSON copied')),
-    actionButton('Re-run Parser', () => loadRowIntoParser(row)),
-    actionButton('Remove', () => removeRows([row.rowId])),
+    iconActionButton('external-link', 'Open on X', () => window.open(row.url, '_blank', 'noreferrer'), { disabled: !row.url }),
+    iconActionButton('info', 'View details', () => openTweetDrawer(row.id || row.rowId)),
+    iconActionButton('copy', 'Copy tweet text', () => copyText(row.text || '', 'Tweet text copied')),
+    overflowActionButton(row),
   );
-  if (row.url) {
-    const open = actionButton('Open on X', () => window.open(row.url, '_blank', 'noreferrer'));
-    wrap.prepend(open);
-  }
   const transcribable = nextTranscribableMediaItem(row);
   if (transcribable) {
-    wrap.appendChild(actionButton('Transcribe', () => transcribeMedia(row, transcribable)));
+    wrap.appendChild(iconActionButton('terminal', 'Transcribe media', () => transcribeMedia(row, transcribable)));
   }
   td.appendChild(wrap);
   td.addEventListener('click', (event) => event.stopPropagation());
@@ -1305,11 +1596,87 @@ function actionButton(label, onClick) {
   btn.className = 'small-btn';
   btn.type = 'button';
   btn.textContent = label;
+  btn.setAttribute('aria-label', label);
+  btn.title = label;
   btn.addEventListener('click', (event) => {
     event.stopPropagation();
     onClick();
   });
   return btn;
+}
+
+function iconActionButton(icon, label, onClick, options = {}) {
+  const btn = document.createElement('button');
+  btn.className = 'icon-action-btn';
+  btn.type = 'button';
+  btn.title = label;
+  btn.setAttribute('aria-label', label);
+  btn.disabled = !!options.disabled;
+  btn.appendChild(iconNode(icon));
+  btn.addEventListener('click', (event) => {
+    event.stopPropagation();
+    if (!btn.disabled) onClick();
+  });
+  return btn;
+}
+
+function overflowActionButton(row) {
+  const btn = iconActionButton('ellipsis', 'More actions', () => toggleRowActionMenu(btn, row));
+  btn.setAttribute('aria-haspopup', 'menu');
+  btn.setAttribute('aria-expanded', 'false');
+  return btn;
+}
+
+function toggleRowActionMenu(button, row) {
+  const existing = document.querySelector('.row-action-menu');
+  if (existing?.dataset.owner === row.rowId) {
+    closeRowActionMenu();
+    return;
+  }
+  closeRowActionMenu();
+  const menu = document.createElement('div');
+  menu.className = 'row-action-menu';
+  menu.dataset.owner = row.rowId;
+  menu.setAttribute('role', 'menu');
+  const items = [
+    ['link', 'Copy URL', () => copyText(row.url || '', 'Tweet URL copied'), !row.url],
+    ['copy', 'Copy tweet text', () => copyText(row.text || '', 'Tweet text copied'), !row.text],
+    ['braces', 'Copy JSON', () => copyJson(row.raw || row, 'Tweet JSON copied'), false],
+    ['refresh', 'Re-run parser', () => loadRowIntoParser(row), false],
+    ['trash', 'Remove tweet', () => removeRows([row.rowId]), false, 'danger'],
+  ];
+  for (const [icon, label, handler, disabled, tone] of items) {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = `row-action-menu-item${tone ? ` ${tone}` : ''}`;
+    item.setAttribute('role', 'menuitem');
+    item.disabled = !!disabled;
+    item.append(iconNode(icon), document.createTextNode(label));
+    item.addEventListener('click', (event) => {
+      event.stopPropagation();
+      closeRowActionMenu();
+      handler();
+    });
+    menu.appendChild(item);
+  }
+  els.dropdownLayer.appendChild(menu);
+  positionRowActionMenu(button, menu);
+  button.setAttribute('aria-expanded', 'true');
+  menu.querySelector('button:not(:disabled)')?.focus();
+}
+
+function closeRowActionMenu() {
+  document.querySelectorAll('.row-action-menu').forEach(menu => menu.remove());
+  document.querySelectorAll('.icon-action-btn[aria-haspopup="menu"]').forEach(btn => btn.setAttribute('aria-expanded', 'false'));
+}
+
+function positionRowActionMenu(button, menu) {
+  const rect = button.getBoundingClientRect();
+  const width = 190;
+  const left = Math.min(Math.max(8, rect.right - width), window.innerWidth - width - 8);
+  menu.style.width = `${width}px`;
+  menu.style.left = `${left}px`;
+  menu.style.top = `${Math.min(rect.bottom + 4, window.innerHeight - menu.offsetHeight - 8)}px`;
 }
 
 function handleRowKeydown(event, row) {
@@ -1358,6 +1725,7 @@ function drawerHtml(row) {
         <dt>Captured</dt><dd>${escapeHtml(formatFullDate(row.capturedAt))}</dd>
         <dt>Source</dt><dd>${escapeHtml(row.source || '—')}</dd>
         <dt>Endpoint</dt><dd>${escapeHtml(row.endpoint || '—')}</dd>
+        <dt>Metrics</dt><dd>${escapeHtml(metricsAriaLabel(row.metrics))}</dd>
         <dt>Media</dt><dd>${escapeHtml(summarizeMedia(row))}</dd>
       </dl>
     </section>
@@ -1468,7 +1836,7 @@ function renderEvents(options = {}) {
     const td = document.createElement('td');
     td.colSpan = 7;
     td.className = 'empty-state';
-    td.innerHTML = '<strong>No live events.</strong><span class="empty-hint">Capture activity will appear here as the service worker records events.</span>';
+    td.innerHTML = `${iconHtml('activity', 'empty-icon')}<strong>No live events yet.</strong><span class="empty-hint">Capture activity will appear here as the service worker records events.</span>`;
     tr.appendChild(td);
     els.eventsBody.appendChild(tr);
     return;
@@ -1560,11 +1928,11 @@ function renderHealth() {
   const health = state.health;
   if (!health) return;
   const connected = !!health.connected;
-  els.headerTransport.textContent = health.transport || 'none';
-  els.headerCapture.textContent = health.captureEnabled ? 'Capture Enabled' : 'Capture Paused';
+  setIconText(els.headerTransport, health.transport || 'none');
+  setIconText(els.headerCapture, health.captureEnabled ? 'Capture Enabled' : 'Capture Paused');
   els.headerStatus.textContent = connected ? 'Connected' : 'Disconnected';
   els.headerStatus.classList.toggle('connected', connected);
-  els.pauseCapture.textContent = health.captureEnabled ? 'Pause' : 'Resume';
+  setIconText(els.pauseCapture, health.captureEnabled ? 'Pause' : 'Resume', health.captureEnabled ? 'pause' : 'radio');
 
   els.hTransport.textContent = health.transport || 'none';
   els.hStatus.textContent = connected ? 'Connected' : 'Disconnected';
@@ -1646,7 +2014,7 @@ function renderBulkBar(visibleRows = filterTweetRows(buildTweetRows())) {
 
 function updateHeaderLastTweet(rows) {
   const sorted = sortTweetRows(rows).filter(row => row.status === 'ACCEPTED' || row.kind === 'tweet');
-  els.headerLastTweet.textContent = `Last tweet: ${sorted[0] ? formatRelative(sorted[0].capturedAt) : '—'}`;
+  setIconText(els.headerLastTweet, `Last tweet: ${sorted[0] ? formatRelative(sorted[0].capturedAt) : '—'}`);
 }
 
 function toggleSelection(rowId, checked) {
@@ -1741,6 +2109,10 @@ function switchTab(tab) {
 
 function tabFromHash() {
   const raw = location.hash.replace(/^#/, '');
+  if (raw.startsWith('tab=')) {
+    const tab = raw.slice('tab='.length);
+    return els.tabPanels.some(panel => panel.id === `tab-${tab}`) ? tab : '';
+  }
   const tab = raw.startsWith('tab-') ? raw.slice('tab-'.length) : raw;
   return els.tabPanels.some(panel => panel.id === `tab-${tab}`) ? tab : '';
 }
@@ -1762,6 +2134,7 @@ function exportTweet(row) {
       reason: row.reason || latestReason(row),
       session_id: row.sessionId,
     },
+    metrics: row.metrics || normalizeMetrics(),
     parser: {
       warnings: row.parserWarnings || [],
       errors: row.parserErrors || [],
@@ -1776,7 +2149,7 @@ function exportJson(data, filename) {
 }
 
 function exportCsv(rows, filename) {
-  const fields = ['tweet_id', 'author_name', 'author_handle', 'tweet_text', 'tweet_url', 'source', 'endpoint', 'captured_at', 'status', 'reason', 'media_type', 'has_link', 'has_media', 'session_id'];
+  const fields = ['tweet_id', 'author_name', 'author_handle', 'tweet_text', 'tweet_url', 'source', 'endpoint', 'captured_at', 'status', 'reason', 'likes', 'retweets', 'replies', 'quotes', 'bookmarks', 'views', 'media_type', 'has_link', 'has_media', 'session_id'];
   const lines = [fields.join(',')];
   for (const row of rows) {
     lines.push([
@@ -1790,6 +2163,12 @@ function exportCsv(rows, filename) {
       row.capturedAt,
       row.status,
       row.reason || latestReason(row),
+      row.metrics?.likes,
+      row.metrics?.retweets,
+      row.metrics?.replies,
+      row.metrics?.quotes,
+      row.metrics?.bookmarks,
+      row.metrics?.views,
       summarizeMedia(row),
       hasLink(row),
       hasAnyMedia(row),
@@ -1822,13 +2201,33 @@ async function copyText(value, message) {
   showToast(message);
 }
 
-function showToast(message) {
-  els.toast.textContent = message;
+function showToast(message, kind = toastKind(message)) {
+  els.toast.className = `toast toast-${kind}`;
+  els.toast.innerHTML = `${iconHtml(toastIcon(kind))}<span>${escapeHtml(message)}</span>`;
   els.toast.hidden = false;
   clearTimeout(showToast.timer);
   showToast.timer = setTimeout(() => {
     els.toast.hidden = true;
   }, 1800);
+}
+
+function toastKind(message) {
+  const text = String(message || '').toLowerCase();
+  if (text.includes('copied')) return 'copied';
+  if (text.includes('failed') || text.includes('invalid') || text.includes('error')) return 'error';
+  if (text.includes('paused') || text.includes('disabled')) return 'warning';
+  if (text.includes('refresh') || text.includes('updated')) return 'refresh';
+  return 'success';
+}
+
+function toastIcon(kind) {
+  return {
+    copied: 'copy-check',
+    error: 'x',
+    warning: 'alert',
+    refresh: 'refresh',
+    success: 'check-circle',
+  }[kind] || 'check-circle';
 }
 
 function bindEvents() {
@@ -1963,6 +2362,7 @@ function bindEvents() {
   els.drawerBackdrop.addEventListener('click', closeTweetDrawer);
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape' && state.activeDropdownId) closeOpenSearchableDropdown();
+    if (event.key === 'Escape') closeRowActionMenu();
     if (event.key === 'Escape' && els.drawer.classList.contains('open')) closeTweetDrawer();
     if (event.key === '/' && document.activeElement?.tagName !== 'INPUT' && document.activeElement?.tagName !== 'TEXTAREA') {
       event.preventDefault();
@@ -1985,6 +2385,7 @@ function bindEvents() {
   });
   document.addEventListener('pointerdown', (event) => {
     if (!event.target?.closest?.('.searchable-select, .searchable-menu')) closeOpenSearchableDropdown();
+    if (!event.target?.closest?.('.row-action-menu, .icon-action-btn[aria-haspopup="menu"]')) closeRowActionMenu();
     if (event.target?.closest?.('.filter-panel, .settings-grid, .detail-drawer')) markUserInteracting(1500);
   });
 }
@@ -2130,14 +2531,14 @@ function markUpdated() {
 
 function updateRefreshState(label) {
   if (label === 'Refreshing...') {
-    els.headerRefreshState.textContent = label;
+    setIconText(els.headerRefreshState, label, 'refresh');
     return;
   }
   if (label.startsWith('Auto-refresh')) {
-    els.headerRefreshState.textContent = label;
+    setIconText(els.headerRefreshState, label);
     return;
   }
-  els.headerRefreshState.textContent = label.startsWith('Last updated') ? label : `Last updated: ${label}`;
+  setIconText(els.headerRefreshState, label.startsWith('Last updated') ? label : `Last updated: ${label}`);
 }
 
 function mediaItems(row) {
@@ -2201,6 +2602,17 @@ function summarizeMedia(row) {
   return parts.length > 1 ? 'Multiple' : parts[0];
 }
 
+function mediaIconFromLabel(value) {
+  const label = String(value || '').toLowerCase();
+  if (label.includes('multiple')) return 'layers';
+  if (label.includes('video')) return 'play';
+  if (label.includes('gif')) return 'sparkles';
+  if (label.includes('image') || label.includes('photo')) return 'image';
+  if (label.includes('link')) return 'link';
+  if (label.includes('no media') || label === 'none' || label === '-') return 'circle-slash';
+  return 'image';
+}
+
 function latestReason(row) {
   return row.events?.findLast?.(event => event.reason)?.reason || row.events?.filter(event => event.reason).at(-1)?.reason || '';
 }
@@ -2228,6 +2640,19 @@ function eventType(event) {
 
 function statusLabel(status) {
   return String(status || 'PENDING').replace(/_/g, ' ');
+}
+
+function statusIcon(status) {
+  switch (String(status || 'PENDING')) {
+    case 'ACCEPTED': return 'check-circle';
+    case 'DEDUPLICATED': return 'repeat';
+    case 'PARSER_ERROR':
+    case 'STAGE_FAILED':
+    case 'BUFFER_OVERFLOW':
+      return 'alert';
+    case 'IGNORED': return 'circle-slash';
+    default: return 'clock';
+  }
 }
 
 function formatRelative(value) {
@@ -2307,6 +2732,7 @@ function escapeAttr(value) {
 }
 
 async function init() {
+  decorateStaticIcons();
   await loadSettings();
   bindEvents();
   switchTab(tabFromHash() || state.settings.defaultTab || 'tweets');
