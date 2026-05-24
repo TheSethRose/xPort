@@ -131,15 +131,18 @@ def _api_json(method, path, payload=None, query=None):
         return json.loads(resp.read() or b'{}')
 
 
-def list_stored_tweets_from_api(limit=50, offset=0):
+def list_stored_tweets_from_api(limit=50, offset=0, include_raw=False):
     """Fetch recent stored tweets from the hosted API, including media rows."""
     limit = max(1, min(int(limit or 50), 100))
     offset = max(0, int(offset or 0))
-    result = _api_json('GET', '/api/tweets', query={
+    query = {
         'limit': limit,
         'offset': offset,
         'include_media': 'true',
-    })
+    }
+    if include_raw:
+        query['include_raw'] = 'true'
+    result = _api_json('GET', '/api/tweets', query=query)
     if result.get('ok') is not True:
         raise RuntimeError(result.get('error') or 'stored tweet lookup failed')
     return result.get('tweets') or []
@@ -147,6 +150,7 @@ def list_stored_tweets_from_api(limit=50, offset=0):
 
 def write_log(lines, out_dir):
     """Append debug log lines to daily log file. Returns logged count."""
+    os.makedirs(out_dir, exist_ok=True)
     log_file = os.path.join(out_dir, f'debug-{date.today().isoformat()}.log')
     with open(log_file, 'a') as f:
         for line in lines:
@@ -160,6 +164,7 @@ def write_dump(filename, content, out_dir):
     safe_name = os.path.basename(filename)
     if not safe_name or safe_name in ('.', '..'):
         raise ValueError(f'Invalid dump filename: {filename!r}')
+    os.makedirs(out_dir, exist_ok=True)
     dump_file = os.path.join(out_dir, safe_name)
     with open(dump_file, 'w') as f:
         f.write(content)

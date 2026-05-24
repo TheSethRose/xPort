@@ -111,6 +111,12 @@ class TestWriteLog:
         count = xport_core.write_log([], str(tmp_path))
         assert count == 0
 
+    def test_creates_missing_dir(self, tmp_path):
+        out_dir = tmp_path / 'missing' / 'logs'
+        count = xport_core.write_log(['line'], str(out_dir))
+        assert count == 1
+        assert list(out_dir.glob('debug-*.log'))
+
 
 # ---------------------------------------------------------------------------
 # write_dump
@@ -127,6 +133,12 @@ class TestWriteDump:
         xport_core.write_dump('test.json', 'old', str(tmp_path))
         xport_core.write_dump('test.json', 'new', str(tmp_path))
         assert (tmp_path / 'test.json').read_text() == 'new'
+
+    def test_creates_missing_dir(self, tmp_path):
+        out_dir = tmp_path / 'missing' / 'dumps'
+        path = xport_core.write_dump('test.json', 'data', str(out_dir))
+        assert path == os.path.join(str(out_dir), 'test.json')
+        assert (out_dir / 'test.json').read_text() == 'data'
 
     def test_traversal_filename_stripped(self, tmp_path):
         path = xport_core.write_dump('../../.ssh/authorized_keys', 'data', str(tmp_path))
@@ -258,6 +270,9 @@ class TestListStoredTweetsFromApi:
         assert tweets == [{'tweet_id': '1', 'text': 'hello', 'media': []}]
         assert captured['url'] == 'https://xport.example/api/tweets?limit=25&offset=5&include_media=true'
         assert captured['auth'] == 'Bearer secret'
+
+        xport_core.list_stored_tweets_from_api(limit=25, offset=5, include_raw=True)
+        assert captured['url'] == 'https://xport.example/api/tweets?limit=25&offset=5&include_media=true&include_raw=true'
 
 
 class TestImageAssetJobs:

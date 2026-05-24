@@ -1,5 +1,9 @@
 [run]
-include = native-host/xtap_core.py
+include =
+    native-host/xport_core.py
+    native-host/xport_daemon.py
+    native-host/xport_host.py
+    api/xport_api.py
 
 [report]
 show_missing = true

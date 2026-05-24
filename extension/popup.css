@@ -5,80 +5,205 @@
 }
 
 body {
-  width: 280px;
+  width: 390px;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  background: #15202b;
-  color: #e7e9ea;
+  background: #111111;
+  color: #f2f2f2;
 }
 
 .container {
-  padding: 16px;
+  padding: 20px;
+}
+
+.header,
+.header-actions,
+.section-heading {
+  display: flex;
+  align-items: center;
+}
+
+.header {
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
 }
 
 h1 {
   font-size: 18px;
   font-weight: 700;
-  margin-bottom: 12px;
+}
+
+.header-actions {
+  gap: 8px;
+}
+
+.utility-btn,
+.text-link {
+  width: auto;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: #9ca3af;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.utility-btn:hover,
+.text-link:hover {
+  color: #8ab4f8;
+  opacity: 1;
+}
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+  padding: 4px 8px;
+  border: 1px solid #2f3336;
+  border-radius: 999px;
+  color: #d4d4d4;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #35d07f;
+}
+
+.status-pill.live .status-dot {
+  background: #35d07f;
+}
+
+.status-pill.paused .status-dot {
+  background: #f5c542;
+}
+
+.status-pill.offline .status-dot {
+  background: #8b98a5;
+}
+
+.status-pill.error .status-dot {
+  background: #ff6b6b;
+}
+
+.status-pill.discovery .status-dot {
+  background: #8ab4f8;
 }
 
 .status {
   font-size: 13px;
-  padding: 6px 10px;
+  font-weight: 650;
+  padding: 8px 10px;
   border-radius: 6px;
-  margin-bottom: 14px;
+  margin-bottom: 12px;
+  border: 1px solid transparent;
 }
 
-.status.connected {
-  background: #0d3b1e;
-  color: #4ade80;
+.status.success {
+  background: #0e2418;
+  border-color: #1f5134;
+  color: #67e8a5;
 }
 
-.status.disconnected {
-  background: #3b2e0d;
-  color: #facc15;
+.status.paused,
+.status.warning {
+  background: #2f2610;
+  border-color: #604d1c;
+  color: #f5c542;
+}
+
+.status.error {
+  background: #351a1a;
+  border-color: #653030;
+  color: #ff8a8a;
+}
+
+.status.offline {
+  background: #1d1d1d;
+  border-color: #383838;
+  color: #b8b8b8;
+}
+
+.status.discovery {
+  background: #112233;
+  border-color: #274463;
+  color: #9cc9ff;
 }
 
 .transport-error {
-  font-size: 11px;
-  color: #f87171;
-  background: #3b1c1c;
-  padding: 6px 10px;
+  font-size: 12px;
+  color: #ff8a8a;
+  background: #2d1616;
+  border: 1px solid #653030;
+  padding: 8px 10px;
   border-radius: 6px;
-  margin-bottom: 14px;
-  margin-top: -8px;
+  margin-bottom: 12px;
+  margin-top: -6px;
   line-height: 1.4;
 }
 
 .stats {
-  display: flex;
-  gap: 16px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
   margin-bottom: 14px;
 }
 
 .stat {
+  width: 100%;
   display: flex;
   flex-direction: column;
-  align-items: center;
-  flex: 1;
+  align-items: flex-start;
+  gap: 2px;
+  min-height: 72px;
+  padding: 10px;
+  border: 1px solid #2f3336;
+  border-radius: 8px;
+  background: #181818;
+  color: inherit;
+  text-align: left;
+}
+
+.stat:hover {
+  opacity: 1;
+  border-color: #4b5563;
+  background: #202020;
+}
+
+.stat:focus-visible {
+  outline: 2px solid #8ab4f8;
+  outline-offset: 2px;
+}
+
+.stat-error {
+  grid-column: span 2;
+  border-color: #653030;
+  background: #241515;
 }
 
 .stat-value {
   font-size: 24px;
+  line-height: 1.05;
   font-weight: 700;
-  color: #1d9bf0;
+  color: #8ab4f8;
 }
 
 .stat-label {
   font-size: 12px;
-  color: #8b98a5;
-  margin-top: 2px;
+  color: #a3a3a3;
 }
 
 button {
   width: 100%;
-  padding: 8px;
+  padding: 9px 12px;
   border: none;
-  border-radius: 9999px;
+  border-radius: 8px;
   font-size: 14px;
   font-weight: 600;
   cursor: pointer;
@@ -89,14 +214,96 @@ button:hover {
   opacity: 0.85;
 }
 
+button:focus-visible,
+input:focus-visible,
+summary:focus-visible {
+  outline: 2px solid #8ab4f8;
+  outline-offset: 2px;
+}
+
 button.capturing {
-  background: #3b1c1c;
-  color: #f87171;
+  background: #f2f2f2;
+  color: #111111;
 }
 
 button.paused {
-  background: #1d9bf0;
+  background: #8ab4f8;
+  color: #0b1220;
+}
+
+button.retry {
+  background: #ff6b6b;
   color: #fff;
+}
+
+.recent-section {
+  margin-top: 14px;
+}
+
+.section-heading {
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+h2 {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.recent-list {
+  display: grid;
+  gap: 8px;
+}
+
+.recent-empty {
+  color: #a3a3a3;
+  font-size: 12px;
+  line-height: 1.45;
+  padding: 10px;
+  border: 1px solid #2f3336;
+  border-radius: 8px;
+  background: #181818;
+}
+
+.recent-tweet {
+  width: 100%;
+  padding: 10px;
+  border: 1px solid #2f3336;
+  border-radius: 8px;
+  background: #181818;
+  color: #f2f2f2;
+  text-align: left;
+}
+
+.recent-tweet:hover {
+  opacity: 1;
+  border-color: #4b5563;
+  background: #202020;
+}
+
+.tweet-author {
+  display: block;
+  font-size: 12px;
+  font-weight: 750;
+  margin-bottom: 4px;
+}
+
+.tweet-preview {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  color: #d4d4d4;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.tweet-time {
+  display: block;
+  margin-top: 5px;
+  color: #8b98a5;
+  font-size: 11px;
 }
 
 .video-section {
@@ -107,42 +314,61 @@ button.paused {
 
 .video-info {
   font-size: 13px;
-  color: #8b98a5;
+  color: #a3a3a3;
   margin-bottom: 8px;
 }
 
 .download-btn {
-  background: #1d9bf0;
+  background: #8ab4f8;
+  color: #0b1220;
+}
+
+.dashboard-btn.primary {
+  background: #8ab4f8;
+  color: #0b1220;
+}
+
+.dashboard-btn.secondary {
+  background: #202020;
   color: #fff;
+  border: 1px solid #343434;
 }
 
 .download-btn.downloading {
-  background: #1a8cd8;
+  background: #356ca8;
   cursor: default;
   opacity: 0.9;
 }
 
 .download-btn.success {
-  background: #0d3b1e;
-  color: #4ade80;
+  background: #0e2418;
+  color: #67e8a5;
 }
 
 .download-btn.error {
-  background: #3b1c1c;
-  color: #f87171;
+  background: #351a1a;
+  color: #ff8a8a;
 }
 
 .settings {
-  margin-top: 14px;
+  margin-top: 16px;
   border-top: 1px solid #2f3336;
-  padding-top: 12px;
+  padding-top: 14px;
 }
 
 .settings-label {
   font-size: 12px;
-  color: #8b98a5;
+  color: #f2f2f2;
+  font-weight: 700;
   display: block;
-  margin-bottom: 6px;
+  margin-bottom: 4px;
+}
+
+.settings-help {
+  color: #a3a3a3;
+  font-size: 11px;
+  line-height: 1.35;
+  margin-bottom: 8px;
 }
 
 .settings-row {
@@ -152,31 +378,52 @@ button.paused {
 
 .settings-row input {
   flex: 1;
-  padding: 6px 8px;
+  min-width: 0;
+  padding: 8px 9px;
   border: 1px solid #2f3336;
   border-radius: 6px;
-  background: #1e2a36;
-  color: #e7e9ea;
+  background: #181818;
+  color: #f2f2f2;
   font-size: 12px;
   font-family: inherit;
   outline: none;
 }
 
 .settings-row input:focus {
-  border-color: #1d9bf0;
+  border-color: #8ab4f8;
 }
 
 .save-btn {
   width: auto;
-  padding: 6px 12px;
+  padding: 8px 12px;
   font-size: 12px;
   border-radius: 6px;
-  background: #1d9bf0;
-  color: #fff;
+  background: #f2f2f2;
+  color: #111111;
 }
 
 .save-btn.error {
   background: #b91c1c;
+  color: #fff;
+}
+
+.dir-feedback {
+  min-height: 16px;
+  margin-top: 7px;
+  color: #a3a3a3;
+  font-size: 11px;
+}
+
+.dir-feedback.success {
+  color: #67e8a5;
+}
+
+.dir-feedback.error {
+  color: #ff8a8a;
+}
+
+.dir-feedback.unsaved {
+  color: #f5c542;
 }
 
 .settings-toggle {
@@ -195,16 +442,45 @@ button.paused {
   cursor: pointer;
 }
 
-.debug-link {
-  display: block;
-  text-align: center;
-  margin-top: 12px;
-  font-size: 11px;
-  color: #8b98a5;
-  cursor: pointer;
-  text-decoration: none;
+.nav-actions {
+  display: grid;
+  gap: 8px;
+  margin-top: 16px;
 }
 
-.debug-link:hover {
-  color: #1d9bf0;
+.debug-summary {
+  margin-top: 12px;
+  border-top: 1px solid #2f3336;
+  padding-top: 10px;
+}
+
+.debug-summary summary {
+  color: #a3a3a3;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.debug-summary dl {
+  display: grid;
+  gap: 7px;
+  margin: 10px 0;
+}
+
+.debug-summary dl div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: #d4d4d4;
+  font-size: 12px;
+}
+
+.debug-summary dt {
+  color: #8b98a5;
+}
+
+.debug-summary dd {
+  margin: 0;
+  text-align: right;
+  font-weight: 650;
 }

@@ -20,10 +20,17 @@ const testSource = bgSource
   .replace(/\/\/ --- Init ---[\s\S]*$/,
     `var _internals = {
       stagePayload, clearStagedPayload, recoverStagedPayloads,
-      saveState, restoreState, enqueueTweets,
+      saveState, restoreState, enqueueTweets, flush,
       stagingStorage, seenIdsStorage,
       get buffer() { return buffer; },
       set buffer(v) { buffer = v; },
+      get transport() { return transport; },
+      set transport(v) { transport = v; },
+      get httpPort() { return httpPort; },
+      set httpPort(v) { httpPort = v; },
+      get httpToken() { return httpToken; },
+      set httpToken(v) { httpToken = v; },
+      get lastIngestError() { return lastIngestError; },
       get seenIds() { return seenIds; },
       set seenIds(v) { seenIds = v; },
       get mediaSeenIds() { return mediaSeenIds; },
@@ -73,7 +80,8 @@ function setup(opts = {}) {
     console: { log() {}, warn() {}, error() {} },
     setTimeout: globalThis.setTimeout,
     clearTimeout: globalThis.clearTimeout,
-    fetch: async () => ({ json: async () => ({}) }),
+    AbortController: globalThis.AbortController,
+    fetch: opts.fetch || (async () => ({ json: async () => ({}) })),
     extractTweets: opts.extractTweets || (() => []),
     dedupTweet,
     chrome: {
@@ -364,5 +372,52 @@ describe('buffer overflow', () => {
     const overflowEvents = env.traceEvents.filter(e => e.status === 'BUFFER_OVERFLOW');
     assert.equal(overflowEvents.length, 1);
     assert.ok(overflowEvents[0].reason.includes('dropped 1'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Flush batching
+// ---------------------------------------------------------------------------
+
+describe('flush batching', () => {
+  it('sends buffered tweets in BATCH_SIZE chunks', async () => {
+    const sent = [];
+    const env = setup({
+      fetch: async (_url, opts) => {
+        sent.push(JSON.parse(opts.body).tweets.map(t => t.id));
+        return { json: async () => ({ ok: true }) };
+      },
+    });
+
+    env.transport = 'http';
+    env.httpPort = 17381;
+    env.buffer = Array.from({ length: 125 }, (_, i) => ({ id: String(i) }));
+
+    await env.flush();
+
+    assert.deepStrictEqual(sent.map(batch => batch.length), [50, 50, 25]);
+    assert.equal(env.buffer.length, 0);
+    assert.equal(env.lastIngestError, null);
+  });
+
+  it('restores the failed chunk and leaves later buffered tweets in order', async () => {
+    let calls = 0;
+    const env = setup({
+      fetch: async () => ({
+        json: async () => (++calls === 1 ? { ok: true } : { ok: false, error: 'ingest down' }),
+      }),
+    });
+
+    env.transport = 'http';
+    env.httpPort = 17381;
+    env.buffer = Array.from({ length: 120 }, (_, i) => ({ id: String(i) }));
+
+    await env.flush();
+
+    assert.equal(calls, 2);
+    assert.equal(env.buffer.length, 70);
+    assert.equal(env.buffer[0].id, '50');
+    assert.equal(env.buffer[env.buffer.length - 1].id, '119');
+    assert.equal(env.lastIngestError, 'ingest down');
   });
 });

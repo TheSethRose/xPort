@@ -84,10 +84,10 @@ XPort is a Chrome extension, local daemon, and hosted ingestion API for capturin
 
 1. A MAIN world content script patches `fetch` and `XMLHttpRequest.open()` to observe GraphQL responses as they arrive
 2. Payloads are relayed via a random-named `CustomEvent` to an ISOLATED world bridge, which forwards them to the service worker
-3. The service worker parses, normalizes, deduplicates, and batches tweets. If a later response adds media for a tweet previously captured as text-only, that media-bearing copy is allowed through once so Postgres can upsert the `tweet_media` rows.
+3. The service worker parses, normalizes, deduplicates, and batches tweets in daemon POSTs of up to 50. If a later response adds media for a tweet previously captured as text-only, that media-bearing copy is allowed through once so Postgres can upsert the `tweet_media` rows.
 4. Batches are sent to the **HTTP daemon** (`xport_daemon.py`), a standalone process on `127.0.0.1:17381` managed by launchd (macOS), systemd (Linux), or Scheduled Task (Windows)
 5. At startup, the extension retrieves the daemon's auth token via **native messaging** (`xport_host.py` over Chrome native messaging). This is a one-time bootstrap — all data flows through HTTP
-6. The daemon forwards tweet batches to the hosted API configured with `XPORT_API_URL` and `XPORT_INGEST_TOKEN`. After a successful ingest, it auto-queues captured `pbs.twimg.com` photos for storage in `tweet_media`. If the API is not configured or rejects a batch, the extension keeps the tweets buffered and shows the ingest error.
+6. The daemon forwards tweet batches to the hosted API configured with `XPORT_API_URL` and `XPORT_INGEST_TOKEN`. After a successful ingest, it auto-queues captured `pbs.twimg.com` photos for storage in `tweet_media`. If the API is not configured or rejects a batch, the extension keeps parsed tweets buffered and shows the ingest error.
 
 ### Supported capture endpoints
 
@@ -188,7 +188,7 @@ Expected response:
 {"ok":true,"version":"0.23.1"}
 ```
 
-Open [x.com](https://x.com) and browse normally. Click the XPort extension icon to see capture status, pause/resume capture, choose a media/debug directory, transcribe a detected video on a captured tweet detail page, or open the debug dashboard.
+Open [x.com](https://x.com) and browse normally. Click the XPort extension icon to see live/paused/offline status, session and all-time tweet counts, recent captured tweets, pause/resume controls, media/debug directory settings, and links into the tweet and debug dashboard tabs.
 
 ### What the installer does
 
@@ -286,7 +286,7 @@ export XPORT_OUTPUT_DIR="$HOME/Documents/xport-data"
 |---|---|---|
 | Popup "Media / debug directory" | *(empty — uses default)* | Overrides the artifact path per-session |
 | `XPORT_OUTPUT_DIR` env var | `~/Downloads/xport` | Fallback for debug logs, dumps, media, and videos |
-| Debug Dashboard | — | Accessible via popup link; shows live capture events, transport health, debug logging and discovery mode toggles, and parser sandbox |
+| Debug Dashboard | — | Accessible via popup link; opens to the tweet-first Captured Tweets workspace with filters, detail drawer, export actions, live events, parser tools, transport diagnostics, and settings |
 
 > **macOS note:** On macOS, the HTTP daemon (installed via `install.sh`) runs outside browser TCC sandboxes and can write to protected paths like `~/Documents` and iCloud Drive after a one-time macOS permission prompt.
 
@@ -476,9 +476,11 @@ XPort/
 
 After modifying extension files (`extension/background.js`, `extension/lib/`, `extension/content-*.js`, `extension/popup.*`), reload the extension in Chrome (`chrome://extensions`) and hard-reload any open X tabs.
 
-**Debug dashboard:** Click "Debug Dashboard" in the popup to open a live view of stored Postgres tweets, capture events, transport health, and a parser sandbox for testing `extractTweets` against raw GraphQL JSON. Debug logging and discovery mode toggles are also here — enable debug logging to write timestamped service worker logs to `debug-YYYY-MM-DD.log`, or discovery mode to log endpoint response shapes to the console.
+**Popup and dashboard:** The popup is the lightweight control center: capture status, session/all-time counts, recent session tweets, pause/resume, output directory feedback, and direct links to dashboard tabs. The dashboard opens to the tweet-first Tweets tab with stored Postgres tweets, recent capture statuses, filters, bulk actions, export actions, and a detail drawer for related events plus raw/parsed JSON. Live Events, Parser, Debug, and Settings tabs keep capture streams, parser testing, transport health, debug logging, discovery mode, and display preferences out of the main tweet workspace. Stored tweets and capture events have auto-refresh and auto-scroll controls. Enable debug logging to write timestamped service worker logs to `debug-YYYY-MM-DD.log`, or discovery mode to log endpoint response shapes to the console.
 
 **Dev mode:** When loaded unpacked (developer mode), the extension prefers `chrome.storage.session` for `seenIds` and `mediaSeenIds` dedup caches, and falls back to `chrome.storage.local` if session storage APIs are unavailable. When session storage is available, reloading the extension automatically clears the cache — no need to manually clear storage between test runs.
+
+**Durability:** Parsed tweet batches persist in production `chrome.storage.local` until the daemon accepts them. Raw staged GraphQL payloads use `chrome.storage.session` when available, so they are meant to survive MV3 service worker suspension, not browser restart.
 
 After modifying Python host files (`xport_core.py`, `xport_host.py`, `xport_daemon.py`), the native host picks up changes on next browser restart. To restart the HTTP daemon immediately:
 

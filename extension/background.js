@@ -6,7 +6,7 @@ const NATIVE_HOST = 'com.xport.host';
 const BATCH_SIZE = 50;
 const FLUSH_INTERVAL_MS = 30_000;
 const MAX_SEEN_IDS = 50_000;
-const HTTP_TIMEOUT_MS = 10_000;
+const HTTP_TIMEOUT_MS = 25_000;
 const MAX_BUFFER_SIZE = 2000;
 
 let captureEnabled = true;
@@ -21,6 +21,7 @@ let debugLogging = false;
 let verboseLogging = false;
 let logBuffer = [];
 let lastIngestError = null;
+let parserErrorCount = 0;
 const isDevMode = !chrome.runtime.getManifest().update_url;
 const hasSessionStorage = !!chrome.storage.session;
 const traceStorage = chrome.storage.session || chrome.storage.local;
@@ -34,7 +35,9 @@ const autoDumpedThisSession = new Set();
 
 // --- Recent tweets cache (for on-demand media lookup) ---
 const MAX_RECENT_TWEETS = 1000;
+const MAX_POPUP_RECENT_TWEETS = 25;
 const recentTweets = new Map();
+const recentCapturedTweets = [];
 const activeTranscriptions = new Map();
 
 // --- Transport state ---
@@ -114,6 +117,7 @@ async function recoverStagedPayloads() {
       }
     } catch (e) {
       console.warn(`[XPort] Recovery parse error for ${key}:`, e.message);
+      parserErrorCount++;
     }
     // Persist buffer before clearing WAL entry — if SW dies mid-recovery,
     // already-cleared entries must have their tweets in durable storage.
@@ -438,8 +442,8 @@ async function flush() {
     if (!(await reprobeTransport())) return;
   }
 
-  if (buffer.length > 0) {
-    const batch = buffer.splice(0);
+  while (buffer.length > 0) {
+    const batch = buffer.splice(0, BATCH_SIZE);
     const message = { tweets: batch };
     if (outputDir) message.outputDir = outputDir;
     try {
@@ -449,6 +453,7 @@ async function flush() {
         console.error('[XPort] Host rejected tweets:', lastIngestError);
         buffer.unshift(...batch);
         await saveState();
+        break;
       } else {
         lastIngestError = null;
         await saveState();
@@ -458,6 +463,7 @@ async function flush() {
       buffer.unshift(...batch);
       lastIngestError = e.message || String(e);
       await saveState();
+      break;
     }
   }
 
@@ -503,6 +509,7 @@ function enqueueTweets(tweets, endpoint = 'unknown') {
       continue;
     }
     buffer.push(tweet);
+    pushRecentCapturedTweet(tweet);
     newCount++;
     emitTraceEvent({ timestamp: Date.now(), endpoint, tweetId: tweet.id, tweetLabel: traceTweetLabel(tweet), status: 'ACCEPTED', reason: null });
   }
@@ -536,6 +543,20 @@ function traceTweetLabel(tweet) {
   const text = typeof tweet.text === 'string' ? tweet.text.replace(/\s+/g, ' ').trim() : '';
   const preview = text.length > 80 ? `${text.slice(0, 77)}...` : text;
   return [author, preview].filter(Boolean).join(': ') || null;
+}
+
+function pushRecentCapturedTweet(tweet) {
+  const capturedAt = tweet.captured_at || new Date().toISOString();
+  const username = tweet.author?.username ? `@${tweet.author.username}` : null;
+  recentCapturedTweets.unshift({
+    id: tweet.id || null,
+    author: username || tweet.author?.display_name || '@unknown',
+    text: typeof tweet.text === 'string' ? tweet.text.replace(/\s+/g, ' ').trim() : '',
+    capturedAt,
+  });
+  if (recentCapturedTweets.length > MAX_POPUP_RECENT_TWEETS) {
+    recentCapturedTweets.length = MAX_POPUP_RECENT_TWEETS;
+  }
 }
 
 function cloneTweetForRecentMedia(tweet) {
@@ -694,6 +715,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         if (buffer.length >= BATCH_SIZE) flush();
       } catch (e) {
         console.error(`[XPort] Parse error for ${msg.endpoint}:`, e, '| data keys:', Object.keys(msg.data || {}).join(', '));
+        parserErrorCount++;
         emitTraceEvent({ timestamp: Date.now(), endpoint: msg.endpoint, tweetId: null, status: 'PARSER_ERROR', reason: e.message });
         await clearStagedPayload(stageKey);
       }
@@ -719,8 +741,20 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           ? 'Daemon not running. Check ~/.xport/daemon-stderr.log'
           : null,
         ingestError: lastIngestError,
+        parserErrors: parserErrorCount,
+        recentTweets: recentCapturedTweets.slice(0, 3),
         discoveredEndpoints: [...autoDumpedThisSession],
       });
+    })();
+    return true;
+  }
+
+  if (msg.type === 'RETRY_TRANSPORT') {
+    (async () => {
+      lastReprobe = 0;
+      await reprobeTransport();
+      if (transport === 'http' && buffer.length > 0) await flush();
+      sendResponse({ connected: transport !== 'none', ingestError: lastIngestError });
     })();
     return true;
   }
@@ -805,7 +839,12 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === 'GET_STORED_TWEETS') {
     (async () => {
       try {
-        const resp = await sendToHost({ type: 'GET_STORED_TWEETS', limit: msg.limit || 50, offset: msg.offset || 0 });
+        const resp = await sendToHost({
+          type: 'GET_STORED_TWEETS',
+          limit: msg.limit || 50,
+          offset: msg.offset || 0,
+          includeRaw: !!msg.includeRaw,
+        });
         sendResponse(resp || { ok: false, error: 'No transport' });
       } catch (e) {
         sendResponse({ ok: false, error: e.message });

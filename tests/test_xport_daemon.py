@@ -286,15 +286,15 @@ class TestAuthorizedRequest:
         """Debug dashboard gets human-readable stored tweets from Postgres."""
         captured = []
 
-        def fake_list(limit=50, offset=0):
-            captured.append((limit, offset))
+        def fake_list(limit=50, offset=0, include_raw=False):
+            captured.append((limit, offset, include_raw))
             return [{'tweet_id': '1', 'author_username': 'seth', 'text': 'hello', 'media': []}]
 
         monkeypatch.setattr(xport_daemon, 'list_stored_tweets_from_api', fake_list)
         status, body = _post(
             daemon_url,
             '/stored-tweets',
-            body={'limit': 25, 'offset': 5},
+            body={'limit': 25, 'offset': 5, 'includeRaw': True},
             token=TEST_TOKEN,
         )
         assert status == 200
@@ -302,7 +302,7 @@ class TestAuthorizedRequest:
             'ok': True,
             'tweets': [{'tweet_id': '1', 'author_username': 'seth', 'text': 'hello', 'media': []}],
         }
-        assert captured == [(25, 5)]
+        assert captured == [(25, 5, True)]
 
     def test_zero_content_length_post(self, daemon_url):
         """POST with Content-Length: 0 exercises _read_json returning {}."""

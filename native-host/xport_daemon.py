@@ -236,6 +236,7 @@ class DaemonHandler(BaseHTTPRequestHandler):
             tweets = list_stored_tweets_from_api(
                 limit=body.get('limit', 50),
                 offset=body.get('offset', 0),
+                include_raw=bool(body.get('includeRaw') or body.get('include_raw')),
             )
             self._send_json({'ok': True, 'tweets': tweets})
         except ValueError as e:

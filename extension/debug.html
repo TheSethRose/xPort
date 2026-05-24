@@ -7,88 +7,295 @@
 </head>
 <body>
   <div class="container">
-    <h1>XPort Debug Dashboard</h1>
+    <header class="app-header">
+      <div>
+        <h1>XPort Debug Dashboard</h1>
+        <div class="header-meta">
+          <span id="header-transport">HTTP</span>
+          <span id="header-capture">Capture Enabled</span>
+          <span id="header-last-tweet">Last tweet: —</span>
+        </div>
+      </div>
+      <div class="header-side">
+        <div id="header-status" class="connection-pill">Disconnected</div>
+        <div class="header-actions">
+          <button id="pause-capture" class="small-btn">Pause</button>
+          <button id="refresh-all" class="small-btn">Refresh</button>
+          <button id="export-visible" class="small-btn">Export</button>
+          <button id="open-settings" class="small-btn">Settings</button>
+        </div>
+      </div>
+    </header>
 
+    <nav class="tabs" aria-label="Dashboard sections">
+      <button class="tab-btn active" data-tab="tweets">Tweets</button>
+      <button class="tab-btn" data-tab="events">Live Events</button>
+      <button class="tab-btn" data-tab="parser">Parser</button>
+      <button class="tab-btn" data-tab="debug">Debug</button>
+      <button class="tab-btn" data-tab="settings">Settings</button>
+    </nav>
+
+    <main>
+      <section id="tab-tweets" class="tab-panel active">
+        <div class="section-heading">
+          <div>
+            <h2>Tweets</h2>
+            <p id="tweets-summary" class="muted-line">Loading captured tweets...</p>
+          </div>
+          <div class="panel-actions">
+            <label class="auto-scroll-label"><input type="checkbox" id="tweets-auto-refresh" checked> Auto-refresh</label>
+            <label class="auto-scroll-label"><input type="checkbox" id="tweets-auto-scroll" checked> Auto-scroll</label>
+          </div>
+        </div>
+
+        <div class="metrics-grid">
+          <div class="metric-card"><span>Captured Tweets</span><strong id="metric-captured">0</strong><small>total</small></div>
+          <div class="metric-card"><span>Accepted</span><strong id="metric-accepted">0</strong><small>new tweets</small></div>
+          <div class="metric-card"><span>Deduplicated</span><strong id="metric-deduped">0</strong><small>repeated</small></div>
+          <div class="metric-card"><span>Parser Errors</span><strong id="metric-errors">0</strong><small>issues</small></div>
+          <div class="metric-card"><span>With Media</span><strong id="metric-media">0</strong><small>tweets</small></div>
+          <div class="metric-card"><span>Sources</span><strong id="metric-sources">0</strong><small id="metric-source-list">active</small></div>
+        </div>
+
+        <div class="filter-panel">
+          <div class="search-row">
+            <input type="search" id="tweet-search" placeholder="Search tweets..." spellcheck="false">
+            <button id="clear-filters" class="small-btn">Clear all</button>
+          </div>
+          <div class="filter-row">
+            <select id="status-filter" aria-label="Status filter"><option value="all">All statuses</option></select>
+            <select id="source-filter" aria-label="Source filter"><option value="all">All sources</option></select>
+            <select id="endpoint-filter" aria-label="Endpoint filter"><option value="all">All endpoints</option></select>
+            <select id="media-filter" aria-label="Media filter">
+              <option value="all">All media</option>
+              <option value="none">No media</option>
+              <option value="media">With media</option>
+              <option value="image">Images</option>
+              <option value="video">Videos</option>
+              <option value="gif">GIFs</option>
+              <option value="link">Links</option>
+              <option value="multiple">Multiple</option>
+            </select>
+            <select id="author-filter" aria-label="Author filter"><option value="all">All authors</option></select>
+            <select id="time-filter" aria-label="Time filter">
+              <option value="all">All time</option>
+              <option value="15m">Last 15 min</option>
+              <option value="1h">Last hour</option>
+              <option value="24h">Last 24 hours</option>
+            </select>
+            <select id="sort-filter" aria-label="Sort tweets">
+              <option value="newest">Newest first</option>
+              <option value="oldest">Oldest first</option>
+              <option value="author">Author</option>
+              <option value="source">Source</option>
+              <option value="status">Status</option>
+              <option value="media">Media</option>
+            </select>
+          </div>
+          <details class="more-filters">
+            <summary>More Filters</summary>
+            <div class="checkbox-grid">
+              <label><input type="checkbox" id="filter-link"> Has link</label>
+              <label><input type="checkbox" id="filter-media"> Has media</label>
+              <label><input type="checkbox" id="filter-image"> Has image</label>
+              <label><input type="checkbox" id="filter-video"> Has video</label>
+              <label><input type="checkbox" id="filter-quoted"> Has quoted tweet</label>
+              <label><input type="checkbox" id="filter-reply"> Has reply</label>
+              <label><input type="checkbox" id="filter-duplicate"> Duplicates only</label>
+              <label><input type="checkbox" id="filter-parser-error"> Parser errors only</label>
+              <label><input type="checkbox" id="filter-new"> New tweets only</label>
+            </div>
+          </details>
+          <div id="active-filters" class="active-filters"></div>
+        </div>
+
+        <div id="bulk-bar" class="bulk-bar" hidden>
+          <span id="bulk-count">0 selected</span>
+          <button id="bulk-export" class="small-btn">Export selected</button>
+          <button id="bulk-copy-urls" class="small-btn">Copy URLs</button>
+          <button id="bulk-copy-text" class="small-btn">Copy Text</button>
+          <button id="bulk-rerun" class="small-btn">Re-run Parser</button>
+          <button id="bulk-remove" class="small-btn">Remove</button>
+          <button id="bulk-reviewed" class="small-btn">Mark reviewed</button>
+        </div>
+
+        <div class="table-wrap" id="tweets-wrap">
+          <table class="data-table tweet-table">
+            <thead>
+              <tr>
+                <th class="select-col"><input type="checkbox" id="select-all-tweets" aria-label="Select all visible tweets"></th>
+                <th>Tweet</th>
+                <th><button class="sort-heading" data-sort="author">Author</button></th>
+                <th><button class="sort-heading" data-sort="source">Source</button></th>
+                <th>Endpoint</th>
+                <th><button class="sort-heading" data-sort="newest">Captured</button></th>
+                <th><button class="sort-heading" data-sort="status">Status</button></th>
+                <th><button class="sort-heading" data-sort="media">Media</button></th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="tweets-body"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="tab-events" class="tab-panel">
+        <div class="section-heading">
+          <div>
+            <h2>Live Events</h2>
+            <p id="events-summary" class="muted-line">Loading capture events...</p>
+          </div>
+          <div class="panel-actions">
+            <label class="auto-scroll-label"><input type="checkbox" id="events-auto-refresh" checked> Auto-refresh</label>
+            <label class="auto-scroll-label"><input type="checkbox" id="auto-scroll" checked> Auto-scroll</label>
+            <button id="clear-events" class="small-btn">Clear</button>
+          </div>
+        </div>
+        <div class="filter-panel">
+          <div class="search-row">
+            <input type="search" id="event-search" placeholder="Search events..." spellcheck="false">
+            <select id="event-status-filter"><option value="all">All statuses</option></select>
+            <select id="event-endpoint-filter"><option value="all">All endpoints</option></select>
+            <select id="event-reason-filter"><option value="all">All reasons</option></select>
+          </div>
+        </div>
+        <div class="table-wrap" id="events-wrap">
+          <table class="data-table events-table">
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Endpoint</th>
+                <th>Event Type</th>
+                <th>Tweet Preview</th>
+                <th>Status</th>
+                <th>Reason</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="events-body"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="tab-parser" class="tab-panel">
+        <div class="section-heading">
+          <div>
+            <h2>Parser Testing Sandbox</h2>
+            <p class="muted-line">Test raw GraphQL payloads or reload data from a selected tweet/event.</p>
+          </div>
+        </div>
+        <div class="sandbox-row">
+          <label for="sandbox-endpoint">Endpoint</label>
+          <input type="text" id="sandbox-endpoint" placeholder="HomeTimeline" spellcheck="false">
+        </div>
+        <div class="quick-load-row">
+          <button id="load-latest-event" class="small-btn">Latest event</button>
+          <button id="load-latest-accepted" class="small-btn">Latest accepted tweet</button>
+          <button id="load-latest-error" class="small-btn">Latest parser error</button>
+          <button id="load-selected" class="small-btn">Selected tweet</button>
+        </div>
+        <div class="sandbox-row">
+          <label for="sandbox-json">Input</label>
+          <textarea id="sandbox-json" rows="12" placeholder="Paste raw GraphQL JSON or load from a tweet/event..." spellcheck="false"></textarea>
+        </div>
+        <div class="parser-actions">
+          <button id="sandbox-run" class="action-btn">Run Parser</button>
+          <button id="sandbox-format" class="small-btn">Format JSON</button>
+          <button id="sandbox-clear" class="small-btn">Clear</button>
+        </div>
+        <div id="parser-result-summary" class="parser-summary"></div>
+        <pre id="sandbox-output" class="sandbox-output"></pre>
+      </section>
+
+      <section id="tab-debug" class="tab-panel">
+        <div class="debug-grid">
     <section class="panel">
       <h2>Transport Health</h2>
-      <table class="health-table">
-        <tr><td class="label">Transport</td><td id="h-transport">—</td></tr>
-        <tr><td class="label">Status</td><td id="h-status">—</td></tr>
-        <tr><td class="label">Capture</td><td id="h-capture">—</td></tr>
-        <tr><td class="label">Session count</td><td id="h-session">—</td></tr>
-        <tr><td class="label">All-time count</td><td id="h-alltime">—</td></tr>
-        <tr><td class="label">Buffer size</td><td id="h-buffer">—</td></tr>
-        <tr id="h-error-row" style="display: none;"><td class="label">Error</td><td id="h-error" class="status-error">—</td></tr>
-      </table>
-      <div class="toggle-row">
-        <label><input type="checkbox" id="debug-toggle"> Debug logging to file</label>
-      </div>
-      <div class="toggle-row">
-        <label><input type="checkbox" id="verbose-toggle"> Discovery mode (verbose endpoint logging)</label>
-      </div>
-    </section>
-
-    <section class="panel" id="discovered-section" style="display: none;">
-      <h2>Discovered Endpoints</h2>
-      <div id="discovered-list" class="discovered-list"></div>
-    </section>
-
+            <table class="health-table">
+              <tr><td class="label">Transport</td><td id="h-transport">—</td></tr>
+              <tr><td class="label">Status</td><td id="h-status">—</td></tr>
+              <tr><td class="label">Capture</td><td id="h-capture">—</td></tr>
+              <tr><td class="label">Session count</td><td id="h-session">—</td></tr>
+              <tr><td class="label">All-time count</td><td id="h-alltime">—</td></tr>
+              <tr><td class="label">Buffer size</td><td id="h-buffer">—</td></tr>
+              <tr id="h-error-row" hidden><td class="label">Error</td><td id="h-error" class="status-error">—</td></tr>
+            </table>
+          </section>
+          <section class="panel" id="discovered-section">
+            <h2>Endpoint Discovery</h2>
+            <div id="discovered-list" class="discovered-list">No endpoints discovered this session.</div>
+          </section>
     <section class="panel">
-      <h2>Stored Tweets</h2>
-      <div class="events-wrap">
-        <table class="events-table tweet-table">
-          <thead>
-            <tr>
-              <th>Tweet</th>
-              <th>Media</th>
-              <th>Source</th>
-              <th>Captured</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody id="tweets-body"></tbody>
-        </table>
-      </div>
-    </section>
-
+            <h2>Diagnostics</h2>
+            <table class="health-table">
+              <tr><td class="label">Debug logging</td><td id="diag-debug">—</td></tr>
+              <tr><td class="label">Discovery mode</td><td id="diag-verbose">—</td></tr>
+              <tr><td class="label">Last refresh</td><td id="diag-refresh">—</td></tr>
+              <tr><td class="label">Last error</td><td id="diag-error">—</td></tr>
+            </table>
+          </section>
     <section class="panel">
-      <h2>
-        Capture Events
-        <span class="panel-actions">
-          <label class="auto-scroll-label"><input type="checkbox" id="auto-scroll" checked> Auto-scroll</label>
-          <button id="clear-events" class="small-btn">Clear</button>
-        </span>
-      </h2>
-      <div class="events-wrap" id="events-wrap">
-        <table class="events-table">
-          <thead>
-            <tr>
-              <th>Time</th>
-              <th>Endpoint</th>
-              <th>Tweet</th>
-              <th>Status</th>
-              <th>Reason</th>
-            </tr>
-          </thead>
-          <tbody id="events-body"></tbody>
-        </table>
-      </div>
-    </section>
+            <h2>Raw Logs</h2>
+            <div class="search-row">
+              <input type="search" id="log-search" placeholder="Search log output..." spellcheck="false">
+              <button id="export-events" class="small-btn">Export events</button>
+            </div>
+            <pre id="raw-log-output" class="log-output">Service worker logs write to debug-YYYY-MM-DD.log when debug logging is enabled.</pre>
+          </section>
+        </div>
+      </section>
 
+      <section id="tab-settings" class="tab-panel">
+        <div class="settings-grid">
     <section class="panel">
-      <h2>Parser Sandbox</h2>
-      <div class="sandbox-row">
-        <label for="sandbox-endpoint">Endpoint</label>
-        <input type="text" id="sandbox-endpoint" placeholder="e.g. HomeTimeline" spellcheck="false">
-      </div>
-      <div class="sandbox-row">
-        <label for="sandbox-json">Response JSON</label>
-        <textarea id="sandbox-json" rows="10" placeholder="Paste raw GraphQL JSON here..." spellcheck="false"></textarea>
-      </div>
-      <button id="sandbox-run" class="action-btn">Run Parser</button>
-      <pre id="sandbox-output" class="sandbox-output"></pre>
-    </section>
+            <h2>Capture</h2>
+            <label class="toggle-row"><input type="checkbox" id="capture-enabled-toggle"> Capture enabled</label>
+            <label class="toggle-row"><input type="checkbox" id="settings-auto-refresh" checked> Auto-refresh</label>
+            <label class="toggle-row"><input type="checkbox" id="settings-auto-scroll" checked> Auto-scroll live events</label>
+            <label class="toggle-row"><input type="checkbox" checked disabled> Deduplicate tweets</label>
+            <label class="toggle-row"><input type="checkbox" checked disabled> Preserve raw payloads</label>
+          </section>
+          <section class="panel">
+            <h2>Debug</h2>
+            <label class="toggle-row"><input type="checkbox" id="debug-toggle"> Debug logging to file</label>
+            <label class="toggle-row"><input type="checkbox" id="verbose-toggle"> Discovery mode</label>
+            <label class="toggle-row"><input type="checkbox" id="verbose-endpoint-toggle"> Verbose endpoint logging</label>
+          </section>
+          <section class="panel">
+            <h2>Display</h2>
+            <div class="segmented" role="group" aria-label="Density">
+              <button id="density-comfortable" class="active" data-density="comfortable">Comfortable</button>
+              <button id="density-compact" data-density="compact">Compact</button>
+            </div>
+            <label class="setting-line">Default tab <select id="default-tab"><option value="tweets">Tweets</option><option value="events">Live Events</option><option value="parser">Parser</option><option value="debug">Debug</option><option value="settings">Settings</option></select></label>
+            <label class="setting-line">Timestamp format <select disabled><option>Relative + exact</option></select></label>
+            <label class="setting-line">Theme <select disabled><option>Charcoal</option></select></label>
+          </section>
+          <section class="panel">
+            <h2>Data</h2>
+            <div class="stacked-actions">
+              <button id="export-all-tweets" class="small-btn">Export all tweets</button>
+              <button id="export-all-events" class="small-btn">Export all events</button>
+              <button id="clear-view-tweets" class="small-btn">Clear hidden tweets</button>
+              <button id="clear-live-events" class="small-btn">Clear live events</button>
+              <button id="reset-session-view" class="small-btn">Reset session view</button>
+            </div>
+          </section>
+        </div>
+      </section>
+    </main>
   </div>
+
+  <aside id="tweet-drawer" class="detail-drawer" aria-hidden="true">
+    <div class="drawer-header">
+      <h2>Tweet Detail</h2>
+      <button id="close-drawer" class="icon-btn" aria-label="Close detail drawer">×</button>
+    </div>
+    <div id="drawer-content" class="drawer-content"></div>
+  </aside>
+  <div id="drawer-backdrop" class="drawer-backdrop" hidden></div>
+  <div id="toast" class="toast" hidden></div>
+
   <script type="module" src="debug.js"></script>
 </body>
 </html>
