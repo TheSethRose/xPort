@@ -286,9 +286,14 @@ class TestAuthorizedRequest:
         """Debug dashboard gets human-readable stored tweets from Postgres."""
         captured = []
 
-        def fake_list(limit=50, offset=0, include_raw=False):
-            captured.append((limit, offset, include_raw))
-            return [{'tweet_id': '1', 'author_username': 'seth', 'text': 'hello', 'media': []}]
+        def fake_list(limit=50, offset=0, include_raw=False, **kwargs):
+            captured.append((limit, offset, include_raw, kwargs))
+            return {
+                'tweets': [{'tweet_id': '1', 'author_username': 'seth', 'text': 'hello', 'media': []}],
+                'total': 10,
+                'facets': {'authors': []},
+                'metrics': {'tweet_count': 10},
+            }
 
         monkeypatch.setattr(xport_daemon, 'list_stored_tweets_from_api', fake_list)
         status, body = _post(
@@ -301,8 +306,30 @@ class TestAuthorizedRequest:
         assert body == {
             'ok': True,
             'tweets': [{'tweet_id': '1', 'author_username': 'seth', 'text': 'hello', 'media': []}],
+            'total': 10,
+            'facets': {'authors': []},
+            'metrics': {'tweet_count': 10},
         }
-        assert captured == [(25, 5, True)]
+        assert captured == [(
+            25,
+            5,
+            True,
+            {
+                'query': None,
+                'author': None,
+                'endpoint': None,
+                'since': None,
+                'until': None,
+                'media': None,
+                'transcription': None,
+                'has_quoted': False,
+                'has_reply': False,
+                'sort': 'newest',
+                'include_total': False,
+                'include_facets': False,
+                'include_metrics': False,
+            },
+        )]
 
     def test_zero_content_length_post(self, daemon_url):
         """POST with Content-Length: 0 exercises _read_json returning {}."""

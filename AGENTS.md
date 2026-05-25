@@ -51,8 +51,8 @@ Key files:
 
 - Capture requires `XPORT_API_URL` and `XPORT_INGEST_TOKEN`. If ingest fails, the daemon returns an error and the extension keeps the batch buffered.
 - There is no local tweet JSONL fallback.
-- Daemon endpoints: `GET /status`, `POST /tweets`, `GET /stored-tweets`, `POST /log`, `POST /test-path`, `POST /transcribe-media`, `GET /transcription-status`, `POST /fetch-media-image`.
-- Hosted endpoints: `POST /api/ingest/tweets`, `GET /api/tweets`, `GET /api/tweets/<tweet_id>`, `GET /api/stats`, `GET /api/tweets/<tweet_id>/media`, `GET /api/media/<media_id>`, `POST /api/media/<media_id>/transcription`, `POST /api/media/<media_id>/asset`.
+- Daemon endpoints: `GET /status`, `POST /tweets`, `POST /log`, `POST /dump`, `POST /test-path`, `POST /stored-tweets`, `POST /transcribe-media`, `POST /transcription-status`, `POST /fetch-media-image`.
+- Hosted endpoints: `GET /health`, `POST /api/ingest/tweets`, `GET /api/tweets`, `GET /api/tweets/<tweet_id>`, `GET /api/tweets/<tweet_id>/media`, `GET /api/media/<media_id>`, `GET /api/media/<media_id>/content`, `GET /api/stats`, `POST /api/media/<media_id>/transcription`, `POST /api/media/<media_id>/asset`.
 
 Raw tweet JSON stores normalized tweet data plus raw fields: IDs, URL, timestamps, author, text, lang, metrics, media, URLs, hashtags, mentions, reply/quote/retweet/conversation fields, and article-only `article.title`, `article.text`, `article.blocks`, `article.media`.
 
@@ -66,7 +66,7 @@ Important tweet behavior:
 
 ## Parser and Fixtures
 
-Known parser endpoints: `HomeTimeline`, `HomeLatestTimeline`, `UserTweets`, `UserTweetsAndReplies`, `UserMedia`, `UserLikes`, `TweetDetail`, `SearchTimeline`, `ListLatestTweetsTimeline`, `Bookmarks`, `Likes`, `CommunityTweetsTimeline`, `BookmarkFolderTimeline`, `TweetResultByRestId`.
+Known parser endpoints: `HomeTimeline`, `HomeLatestTimeline`, `UserTweets`, `UserTweetsAndReplies`, `UserMedia`, `UserLikes`, `UserArticlesTweets`, `UserHighlightsTweets`, `TweetDetail`, `SearchTimeline`, `ListLatestTweetsTimeline`, `Bookmarks`, `Likes`, `CommunityTweetsTimeline`, `BookmarkFolderTimeline`, `TweetResultByRestId`.
 
 - Unknown endpoints fall back to recursive `instructions[]` search, max depth 5.
 - Non-tweet endpoints are filtered by `IGNORED_ENDPOINTS` in `extension/background.js`.
@@ -91,6 +91,7 @@ Run the smallest relevant validation. Parser changes should at least run the gol
 
 - Dev mode is `!chrome.runtime.getManifest().update_url`.
 - Dev mode stores `seenIds` and `mediaSeenIds` in `chrome.storage.session` when available, falling back to `chrome.storage.local`; production uses `chrome.storage.local`.
+- Raw staged GraphQL payloads use session storage when available so MV3 service worker suspension can replay them; they are not meant to survive browser restart.
 - `seenIds` is FIFO capped at 50,000.
 - Path validation goes through daemon `TEST_PATH`, which attempts `makedirs` plus temp write/delete before accepting a media/debug directory.
 - Popup refreshes transport status every 2s. On daemon failure, the extension buffers and reprobes every 30s.
@@ -104,14 +105,14 @@ Daemon management:
 - Linux: `systemctl --user restart com.xport.daemon`
 - Windows: `Stop-ScheduledTask -TaskName XPortDaemon; Start-ScheduledTask -TaskName XPortDaemon`
 
-Media env vars: `XPORT_AUTO_STORE_IMAGES` default true, `XPORT_TRANSCRIBE_COMMAND`, `XPORT_TRANSCRIBE_MODEL` default `nvidia/parakeet-tdt-0.6b-v3`, `XPORT_TRANSCRIBE_MAX_DURATION_MS` default `90000`, `XPORT_TRANSCRIBE_MAX_FILE_MB` default `75`, `XPORT_IMAGE_FETCH_MAX_FILE_MB` default `XPORT_MAX_FILE_MB` or `50`.
+Media env vars: `XPORT_AUTO_STORE_IMAGES` default true, `XPORT_TRANSCRIBE_COMMAND`, `XPORT_TRANSCRIBE_MODEL` default `nvidia/parakeet-tdt-0.6b-v3`, `XPORT_TRANSCRIBE_MAX_FILE_MB` default `75`, `XPORT_TRANSCRIBE_REQUEST_TIMEOUT_SECONDS` default `60`, `XPORT_IMAGE_FETCH_MAX_FILE_MB` default `XPORT_MAX_FILE_MB` or `50`.
 
 macOS/Linux installs auto-use `native-host/xport_transcribe_parakeet.sh` when `parakeet-mlx` and `ffmpeg` are on `PATH` and no transcription command is set.
 
 ## UI Rules
 
 - Popup answers capture health first, then counts, pause/resume, recent session tweets, media/debug directory feedback, and dashboard links.
-- Dashboard opens tweet-first. Tweets tab pages stored Postgres tweets via `/stored-tweets`, supplemented by related current-session capture events.
+- Dashboard opens tweet-first. Tweets tab pages stored Postgres tweets via `/stored-tweets`, supplemented by related current-session capture events, and renders the table 100 rows per page. Keep tweet search/filter/sort server-side so the browser does not hydrate the full tweet history.
 - Live Events is current-session only. Debug, transport, parser, and settings are secondary tabs.
 - Stored tweets and capture events keep auto-refresh and auto-scroll controls.
 - Long-list filters, including transcription status, use searchable dropdowns.

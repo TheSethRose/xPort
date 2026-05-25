@@ -126,6 +126,14 @@
           <button id="bulk-reviewed" class="small-btn">Mark reviewed</button>
         </div>
 
+        <div id="tweet-pagination" class="tweet-pagination" hidden>
+          <span id="tweet-page-summary" class="muted-line">Showing 0 tweets</span>
+          <div class="pagination-actions">
+            <button id="tweet-prev-page" class="small-btn" data-icon="chevron-left">Previous</button>
+            <button id="tweet-next-page" class="small-btn" data-icon="chevron-right">Next</button>
+          </div>
+        </div>
+
         <div class="table-wrap" id="tweets-wrap">
           <table class="data-table tweet-table">
             <thead>
@@ -297,9 +305,9 @@
 
   <div id="dropdown-layer" class="dropdown-layer" aria-live="polite"></div>
 
-  <aside id="tweet-drawer" class="detail-drawer" aria-hidden="true">
+  <aside id="tweet-drawer" class="detail-drawer" role="dialog" aria-modal="true" aria-labelledby="tweet-drawer-title" aria-hidden="true" inert>
     <div class="drawer-header">
-      <h2>Tweet Detail</h2>
+      <h2 id="tweet-drawer-title">Tweet Detail</h2>
       <button id="close-drawer" class="icon-btn" aria-label="Close detail drawer">×</button>
     </div>
     <div id="drawer-content" class="drawer-content"></div>

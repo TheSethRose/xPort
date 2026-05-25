@@ -144,27 +144,35 @@ def test_list_tweets_accepts_filters(api_module, monkeypatch, api_url):
 
     def fake_list_tweets(**kwargs):
         captured.append(kwargs)
-        return [{'tweet_id': '1', 'author_username': 'seth', 'text': 'hello'}]
+        return {'tweets': [{'tweet_id': '1', 'author_username': 'seth', 'text': 'hello'}], 'total': 3}
 
     monkeypatch.setattr(api_module, 'list_tweets', fake_list_tweets)
     status, body = _get(
         base_url,
-        '/api/tweets?q=hello&author=seth&since=2026-05-01T00%3A00%3A00Z&limit=5&include_raw=true',
+        '/api/tweets?q=hello&author=seth&since=2026-05-01T00%3A00%3A00Z&limit=5&include_raw=true&include_total=true&media=video&transcription=done&has_quoted=true&sort=oldest',
         token='test-ingest-token',
     )
 
     assert status == 200
-    assert body == {'ok': True, 'tweets': [{'tweet_id': '1', 'author_username': 'seth', 'text': 'hello'}]}
+    assert body == {'ok': True, 'tweets': [{'tweet_id': '1', 'author_username': 'seth', 'text': 'hello'}], 'total': 3}
     assert captured == [{
         'query': 'hello',
         'author': 'seth',
         'since': '2026-05-01T00:00:00Z',
         'until': None,
         'endpoint': None,
+        'media': 'video',
+        'transcription': 'done',
+        'has_quoted': True,
+        'has_reply': False,
+        'sort': 'oldest',
         'limit': 5,
         'offset': 0,
         'include_raw': True,
         'include_media': False,
+        'include_total': True,
+        'include_facets': False,
+        'include_metrics': False,
     }]
 
 

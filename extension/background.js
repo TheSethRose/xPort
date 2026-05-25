@@ -356,6 +356,12 @@ async function sendToHost(msg) {
       offset: msg.offset || 0,
       includeRaw: !!msg.includeRaw,
     };
+    for (const key of [
+      'query', 'author', 'endpoint', 'since', 'until', 'media', 'transcription', 'sort',
+      'hasQuoted', 'hasReply', 'includeTotal', 'includeFacets', 'includeMetrics',
+    ]) {
+      if (msg[key] !== undefined && msg[key] !== null && msg[key] !== '') body[key] = msg[key];
+    }
   } else {
     path = '/tweets';
     body = { tweets: msg.tweets };
@@ -847,6 +853,19 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           limit: msg.limit || 50,
           offset: msg.offset || 0,
           includeRaw: !!msg.includeRaw,
+          query: msg.query,
+          author: msg.author,
+          endpoint: msg.endpoint,
+          since: msg.since,
+          until: msg.until,
+          media: msg.media,
+          transcription: msg.transcription,
+          sort: msg.sort,
+          hasQuoted: !!msg.hasQuoted,
+          hasReply: !!msg.hasReply,
+          includeTotal: !!msg.includeTotal,
+          includeFacets: !!msg.includeFacets,
+          includeMetrics: !!msg.includeMetrics,
         });
         sendResponse(resp || { ok: false, error: 'No transport' });
       } catch (e) {

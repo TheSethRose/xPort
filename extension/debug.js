@@ -27,7 +27,14 @@ const state = {
   reviewedIds: new Set(),
   selectedIds: new Set(),
   activeTweetId: null,
+  drawerReturnFocus: null,
   activeTab: 'tweets',
+  tweetPage: 1,
+  tweetTotal: 0,
+  tweetFacets: null,
+  tweetMetrics: null,
+  storedTweetsRefreshRequestId: 0,
+  storedTweetsRefreshTimer: null,
   settings: { ...DEFAULT_SETTINGS },
   pendingVisualRefresh: {
     storedTweets: null,
@@ -175,14 +182,18 @@ const els = {
   closeDrawer: $('close-drawer'),
   drawerBackdrop: $('drawer-backdrop'),
   toast: $('toast'),
+  tweetPagination: $('tweet-pagination'),
+  tweetPageSummary: $('tweet-page-summary'),
+  tweetPrevPage: $('tweet-prev-page'),
+  tweetNextPage: $('tweet-next-page'),
 };
 
 const SEARCHABLE_THRESHOLD = 7;
 const VIRTUALIZE_DROPDOWN_THRESHOLD = 500;
 const DROPDOWN_OPTION_HEIGHT = 44;
-const STORED_TWEET_PAGE_SIZE = 500;
-const STORED_TWEET_RECENT_PAGE_SIZE = 100;
+const STORED_TWEET_PAGE_SIZE = 100;
 const STORED_TWEET_MAX_OFFSET = 100000;
+const TWEET_TABLE_PAGE_SIZE = 100;
 const searchableDropdowns = new Map();
 
 const ICONS = {
@@ -193,6 +204,8 @@ const ICONS = {
   bug: '<path d="m8 2 1.8 1.8"/><path d="M14.2 3.8 16 2"/><path d="M9 7h6"/><path d="M8 7v8a4 4 0 0 0 8 0V7"/><path d="M5 7h14"/><path d="M5 11h3"/><path d="M16 11h3"/><path d="M6 18h3"/><path d="M15 18h3"/>',
   check: '<path d="M20 6 9 17l-5-5"/>',
   'check-circle': '<path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="10"/>',
+  'chevron-left': '<path d="m15 18-6-6 6-6"/>',
+  'chevron-right': '<path d="m9 18 6-6-6-6"/>',
   'circle-dot': '<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/>',
   'circle-slash': '<circle cx="12" cy="12" r="10"/><path d="m4.9 4.9 14.2 14.2"/>',
   clock: '<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>',
@@ -478,63 +491,15 @@ async function refreshHealth() {
 }
 
 async function refreshStoredTweets(options = {}) {
-  if (state.storedTweetsRefreshInFlight) return;
+  const requestId = ++state.storedTweetsRefreshRequestId;
   state.storedTweetsRefreshInFlight = true;
-  if (!options.incremental) updateRefreshState('Refreshing...');
+  if (!options.silent) updateRefreshState('Refreshing...');
   try {
-    if (options.incremental) {
-      const resp = await sendMessage({
-        type: 'GET_STORED_TWEETS',
-        limit: STORED_TWEET_RECENT_PAGE_SIZE,
-        offset: 0,
-        includeRaw: true,
-      });
-      if (!resp?.ok) {
-        updateRefreshState('Update failed');
-        return;
-      }
-      const existingTweets = state.pendingVisualRefresh.storedTweets || state.storedTweets;
-      const tweets = mergeStoredTweets((resp.tweets || []).map(normalizeStoredTweet), existingTweets);
-      if (options.deferable && shouldDeferVisualRefresh()) {
-        state.pendingVisualRefresh.storedTweets = tweets;
-        updateRefreshState('Auto-refresh paused while editing');
-        return;
-      }
-      applyStoredTweets(tweets, options);
-      return;
-    }
-
-    const tweets = [];
-    const seenPageIds = new Set();
-    let offset = 0;
-    let resp = null;
-    do {
-      resp = await sendMessage({
-        type: 'GET_STORED_TWEETS',
-        limit: STORED_TWEET_PAGE_SIZE,
-        offset,
-        includeRaw: true,
-      });
-      if (!resp?.ok) break;
-      const page = resp.tweets || [];
-      const normalizedPage = page.map(normalizeStoredTweet);
-      const newPageRows = normalizedPage.filter((tweet) => {
-        if (!tweet.id || seenPageIds.has(tweet.id)) return false;
-        seenPageIds.add(tweet.id);
-        return true;
-      });
-      tweets.push(...newPageRows);
-      offset += page.length;
-      if (page.length > 0) {
-        updateRefreshState(`Loaded ${tweets.length.toLocaleString()} tweets...`);
-        if (!shouldDeferVisualRefresh()) {
-          state.storedTweets = tweets;
-          renderAllTweets({ autoScroll: !!options.autoScroll && offset === page.length });
-        }
-      }
-      if (newPageRows.length === 0 && page.length > 0) break;
-    } while ((resp.tweets || []).length > 0 && offset <= STORED_TWEET_MAX_OFFSET);
-
+    const query = storedTweetQuery(options);
+    const resp = query.skipStored
+      ? { ok: true, tweets: [], total: 0, facets: state.tweetFacets || {}, metrics: state.tweetMetrics || {} }
+      : await sendMessage(query.message);
+    if (requestId !== state.storedTweetsRefreshRequestId) return;
     if (!resp?.ok) {
       state.storedTweets = [];
       renderTweetMessage(resp?.error || 'Stored tweets are unavailable.');
@@ -542,26 +507,76 @@ async function refreshStoredTweets(options = {}) {
       updateRefreshState('Update failed');
       return;
     }
+    const tweets = (resp.tweets || []).map(normalizeStoredTweet);
+    const total = Number.isFinite(Number(resp.total)) ? Number(resp.total) : tweets.length;
     if (options.deferable && shouldDeferVisualRefresh()) {
-      state.pendingVisualRefresh.storedTweets = tweets;
+      state.pendingVisualRefresh.storedTweets = { tweets, total, facets: resp.facets, metrics: resp.metrics };
       updateRefreshState('Auto-refresh paused while editing');
       return;
     }
-    applyStoredTweets(tweets, options);
+    applyStoredTweets(tweets, { ...options, total, facets: resp.facets, metrics: resp.metrics });
   } finally {
-    state.storedTweetsRefreshInFlight = false;
+    if (requestId === state.storedTweetsRefreshRequestId) state.storedTweetsRefreshInFlight = false;
   }
 }
 
-function mergeStoredTweets(incoming, existing) {
-  const byId = new Map();
-  for (const tweet of incoming) {
-    if (tweet.id) byId.set(tweet.id, tweet);
-  }
-  for (const tweet of existing) {
-    if (tweet.id && !byId.has(tweet.id)) byId.set(tweet.id, tweet);
-  }
-  return [...byId.values()];
+function storedTweetQuery(options = {}) {
+  const filters = options.filters || state.filters;
+  const skipStored = filters.parserErrorOnly
+    || filters.duplicateOnly
+    || (filters.status !== 'all' && filters.status !== 'ACCEPTED');
+  const message = {
+    type: 'GET_STORED_TWEETS',
+    limit: options.limit || STORED_TWEET_PAGE_SIZE,
+    offset: options.offset ?? ((state.tweetPage - 1) * STORED_TWEET_PAGE_SIZE),
+    includeRaw: true,
+    includeTotal: true,
+    includeFacets: options.includeFacets !== false,
+    includeMetrics: options.includeMetrics !== false,
+  };
+  if (filters.search.trim()) message.query = filters.search.trim();
+  if (filters.author !== 'all') message.author = filters.author;
+  const endpoint = filters.endpoint !== 'all' ? filters.endpoint : (filters.source !== 'all' ? filters.source : null);
+  if (endpoint) message.endpoint = endpoint;
+  if (filters.media !== 'all') message.media = filters.media;
+  if (filters.transcription !== 'all') message.transcription = filters.transcription;
+  if (filters.hasQuoted) message.hasQuoted = true;
+  if (filters.hasReply) message.hasReply = true;
+  if (filters.sort !== 'newest') message.sort = filters.sort;
+  const since = timeFilterSince(filters.time);
+  if (since) message.since = since;
+  return { message, skipStored };
+}
+
+function defaultTweetFilters() {
+  return {
+    search: '',
+    status: 'all',
+    source: 'all',
+    endpoint: 'all',
+    media: 'all',
+    transcription: 'all',
+    author: 'all',
+    time: 'all',
+    sort: 'newest',
+    hasQuoted: false,
+    hasReply: false,
+    duplicateOnly: false,
+    parserErrorOnly: false,
+    newOnly: false,
+  };
+}
+
+function timeFilterSince(value) {
+  const windows = { '15m': 15 * 60 * 1000, '1h': 60 * 60 * 1000, '24h': 24 * 60 * 60 * 1000 };
+  return windows[value] ? new Date(Date.now() - windows[value]).toISOString() : null;
+}
+
+function scheduleStoredTweetsRefresh(delay = 0) {
+  clearTimeout(state.storedTweetsRefreshTimer);
+  state.storedTweetsRefreshTimer = setTimeout(() => {
+    refreshStoredTweets({ resetScroll: true });
+  }, delay);
 }
 
 function refreshEvents(options = {}) {
@@ -578,7 +593,10 @@ function refreshEvents(options = {}) {
 
 function applyStoredTweets(tweets, options = {}) {
   state.storedTweets = tweets;
-  renderAllTweets({ autoScroll: !!options.autoScroll });
+  state.tweetTotal = Number.isFinite(Number(options.total)) ? Number(options.total) : tweets.length;
+  if (options.facets) state.tweetFacets = options.facets;
+  if (options.metrics) state.tweetMetrics = options.metrics;
+  renderAllTweets({ autoScroll: !!options.autoScroll, resetScroll: !!options.resetScroll });
   markUpdated();
 }
 
@@ -713,40 +731,70 @@ function renderAllTweets(options = {}) {
   populateTweetFilterOptions(rows);
   renderMetrics(rows);
   const filteredRows = filterTweetRows(rows);
-  renderTweetTable(filteredRows, options);
+  const page = currentTweetPage(filteredRows);
+  renderTweetPagination(page);
+  renderTweetTable(page.rows, { ...options, filteredRows });
   renderActiveFilters();
-  renderBulkBar(filteredRows);
+  renderBulkBar(filteredRows, page.rows);
   updateHeaderLastTweet(rows);
 }
 
 function renderMetrics(rows = buildTweetRows()) {
-  const stored = state.storedTweets.length;
+  const metrics = state.tweetMetrics || {};
+  const stored = Number.isFinite(Number(metrics.tweet_count)) ? Number(metrics.tweet_count) : state.tweetTotal;
   const acceptedEvents = state.events.filter(ev => ev.status === 'ACCEPTED').length;
   const deduped = state.events.filter(ev => ev.status === 'DEDUPLICATED').length;
   const errors = state.events.filter(ev => ev.status === 'PARSER_ERROR').length;
-  const withMedia = rows.filter(hasAnyMedia).length;
+  const withMedia = Number.isFinite(Number(metrics.media_count)) ? Number(metrics.media_count) : rows.filter(hasAnyMedia).length;
+  const sourceFacetCount = (state.tweetFacets?.sources || []).length;
   const sources = unique(rows.map(row => row.source).filter(Boolean));
+  const sourceCount = sourceFacetCount || sources.length;
 
   setTextIfChanged(els.metricCaptured, String(stored));
   setTextIfChanged(els.metricAccepted, String(acceptedEvents || stored));
   setTextIfChanged(els.metricDeduped, String(deduped));
   setTextIfChanged(els.metricErrors, String(errors));
   setTextIfChanged(els.metricMedia, String(withMedia));
-  setTextIfChanged(els.metricSources, String(sources.length));
-  setTextIfChanged(els.metricSourceList, sources.slice(0, 2).join(', ') || 'active');
+  setTextIfChanged(els.metricSources, String(sourceCount));
+  setTextIfChanged(els.metricSourceList, (state.tweetFacets?.sources || []).slice(0, 2).map(item => item.label || item.value).join(', ') || sources.slice(0, 2).join(', ') || 'active');
   setTextIfChanged(els.tweetsSummary, `${stored} captured · ${acceptedEvents || stored} accepted · ${deduped} deduplicated · ${errors} parser errors · ${withMedia} with media`);
 }
 
 function populateTweetFilterOptions(rows) {
-  replaceOptions(els.statusFilter, 'All statuses', unique(rows.map(row => row.status)));
-  replaceOptions(els.sourceFilter, 'All sources', countedOptions(rows, 'source'));
-  replaceOptions(els.endpointFilter, 'All endpoints', countedOptions(rows, 'endpoint'));
-  replaceOptions(els.authorFilter, 'All authors', authorOptions(rows));
+  const facets = state.tweetFacets || {};
+  const eventRows = rows.filter(row => row.kind === 'event');
+  replaceOptions(els.statusFilter, 'All statuses', unique(['ACCEPTED', ...eventRows.map(row => row.status)]));
+  replaceOptions(els.sourceFilter, 'All sources', mergeFacetOptions(facets.sources, countedOptions(eventRows, 'source')));
+  replaceOptions(els.endpointFilter, 'All endpoints', mergeFacetOptions(facets.endpoints, countedOptions(eventRows, 'endpoint')));
+  replaceOptions(els.authorFilter, 'All authors', mergeFacetOptions(facets.authors, authorOptions(eventRows), { author: true }));
   els.statusFilter.value = optionValueOrAll(els.statusFilter, state.filters.status);
   els.sourceFilter.value = optionValueOrAll(els.sourceFilter, state.filters.source);
   els.endpointFilter.value = optionValueOrAll(els.endpointFilter, state.filters.endpoint);
   els.authorFilter.value = optionValueOrAll(els.authorFilter, state.filters.author);
   syncAllSearchableDropdowns();
+}
+
+function mergeFacetOptions(facetItems = [], localItems = [], options = {}) {
+  const byValue = new Map();
+  for (const item of facetItems || []) {
+    const value = normalizeFilterValue(item.value ?? item.label);
+    if (!value) continue;
+    const label = options.author ? `@${value}` : String(item.label || value);
+    const count = Number(item.count || 0);
+    byValue.set(value, {
+      value,
+      label,
+      secondary: options.author
+        ? (item.label && item.label !== value ? String(item.label) : `${count} ${count === 1 ? 'tweet' : 'tweets'}`)
+        : `${count} ${count === 1 ? 'tweet' : 'tweets'}`,
+      searchText: options.author ? `${label} ${value} ${item.label || ''}` : `${label} ${value}`,
+    });
+  }
+  for (const item of localItems) {
+    const normalized = normalizeOptionItem(item);
+    if (normalized.value && !byValue.has(normalized.value)) byValue.set(normalized.value, normalized);
+  }
+  return [...byValue.values()].sort((a, b) => a.label.localeCompare(b.label));
 }
 
 function syncDropdownSelect(select) {
@@ -1234,26 +1282,26 @@ function selectSearchableOption(dropdown, option) {
   dropdown.button.focus();
 }
 
-function filterTweetRows(rows) {
-  const query = state.filters.search.trim().toLowerCase();
+function filterTweetRows(rows, filters = state.filters) {
+  const query = filters.search.trim().toLowerCase();
   const now = Date.now();
   const filtered = rows.filter((row) => {
     if (query && !tweetSearchText(row).includes(query)) return false;
-    if (state.filters.status !== 'all' && row.status !== state.filters.status) return false;
-    if (state.filters.source !== 'all' && row.source !== state.filters.source) return false;
-    if (state.filters.endpoint !== 'all' && row.endpoint !== state.filters.endpoint) return false;
-    if (state.filters.author !== 'all' && row.authorHandle !== state.filters.author) return false;
-    if (!matchesMediaFilter(row)) return false;
-    if (!matchesTranscriptionFilter(row)) return false;
-    if (!matchesTimeFilter(row, now)) return false;
-    if (state.filters.hasQuoted && !row.quotedTweetId) return false;
-    if (state.filters.hasReply && !row.inReplyTo) return false;
-    if (state.filters.duplicateOnly && !isDuplicate(row)) return false;
-    if (state.filters.parserErrorOnly && row.status !== 'PARSER_ERROR') return false;
-    if (state.filters.newOnly && row.status !== 'ACCEPTED') return false;
+    if (filters.status !== 'all' && row.status !== filters.status) return false;
+    if (filters.source !== 'all' && row.source !== filters.source) return false;
+    if (filters.endpoint !== 'all' && row.endpoint !== filters.endpoint) return false;
+    if (filters.author !== 'all' && row.authorHandle !== filters.author) return false;
+    if (!matchesMediaFilter(row, filters)) return false;
+    if (!matchesTranscriptionFilter(row, filters)) return false;
+    if (!matchesTimeFilter(row, now, filters)) return false;
+    if (filters.hasQuoted && !row.quotedTweetId) return false;
+    if (filters.hasReply && !row.inReplyTo) return false;
+    if (filters.duplicateOnly && !isDuplicate(row)) return false;
+    if (filters.parserErrorOnly && row.status !== 'PARSER_ERROR') return false;
+    if (filters.newOnly && row.status !== 'ACCEPTED') return false;
     return true;
   });
-  return sortTweetRows(filtered);
+  return sortTweetRows(filtered, filters);
 }
 
 function tweetSearchText(row) {
@@ -1269,8 +1317,8 @@ function tweetSearchText(row) {
   ].join(' ').toLowerCase();
 }
 
-function matchesMediaFilter(row) {
-  switch (state.filters.media) {
+function matchesMediaFilter(row, filters = state.filters) {
+  switch (filters.media) {
     case 'none': return !hasAnyMedia(row);
     case 'media': return hasAnyMedia(row);
     case 'image': return hasMediaType(row, 'photo');
@@ -1282,27 +1330,27 @@ function matchesMediaFilter(row) {
   }
 }
 
-function matchesTranscriptionFilter(row) {
+function matchesTranscriptionFilter(row, filters = state.filters) {
   const media = transcriptableMediaItems(row);
-  if (state.filters.transcription === 'all') return true;
-  if (state.filters.transcription === 'has_text') {
+  if (filters.transcription === 'all') return true;
+  if (filters.transcription === 'has_text') {
     return media.some(item => String(item.transcript_text || '').trim().length > 0);
   }
-  return media.some(item => transcriptStatus(item) === state.filters.transcription);
+  return media.some(item => transcriptStatus(item) === filters.transcription);
 }
 
-function matchesTimeFilter(row, now) {
-  if (state.filters.time === 'all') return true;
+function matchesTimeFilter(row, now, filters = state.filters) {
+  if (filters.time === 'all') return true;
   const ts = new Date(row.capturedAt).getTime();
   if (Number.isNaN(ts)) return false;
   const windows = { '15m': 15 * 60 * 1000, '1h': 60 * 60 * 1000, '24h': 24 * 60 * 60 * 1000 };
-  return now - ts <= windows[state.filters.time];
+  return now - ts <= windows[filters.time];
 }
 
-function sortTweetRows(rows) {
+function sortTweetRows(rows, filters = state.filters) {
   const sorted = [...rows];
   const byTime = (a, b) => dateValue(b.capturedAt) - dateValue(a.capturedAt);
-  switch (state.filters.sort) {
+  switch (filters.sort) {
     case 'oldest': return sorted.sort((a, b) => dateValue(a.capturedAt) - dateValue(b.capturedAt));
     case 'author': return sorted.sort((a, b) => a.authorHandle.localeCompare(b.authorHandle) || byTime(a, b));
     case 'source': return sorted.sort((a, b) => a.source.localeCompare(b.source) || byTime(a, b));
@@ -1310,6 +1358,38 @@ function sortTweetRows(rows) {
     case 'media': return sorted.sort((a, b) => summarizeMedia(a).localeCompare(summarizeMedia(b)) || byTime(a, b));
     default: return sorted.sort(byTime);
   }
+}
+
+function currentTweetPage(rows) {
+  const totalRows = state.tweetTotal + rows.filter(row => row.kind === 'event').length;
+  const totalPages = Math.max(1, Math.ceil(totalRows / TWEET_TABLE_PAGE_SIZE));
+  state.tweetPage = Math.min(Math.max(1, state.tweetPage || 1), totalPages);
+  const start = (state.tweetPage - 1) * TWEET_TABLE_PAGE_SIZE;
+  const end = Math.min(start + rows.length, totalRows);
+  return {
+    rows,
+    totalRows,
+    totalPages,
+    start,
+    end,
+  };
+}
+
+function renderTweetPagination(page) {
+  els.tweetPagination.hidden = page.totalRows <= TWEET_TABLE_PAGE_SIZE;
+  if (page.totalRows === 0) {
+    els.tweetPageSummary.textContent = 'Showing 0 tweets';
+  } else {
+    els.tweetPageSummary.textContent = `Showing ${page.start + 1}-${page.end} of ${page.totalRows} tweets · Page ${state.tweetPage} of ${page.totalPages}`;
+  }
+  els.tweetPrevPage.disabled = state.tweetPage <= 1;
+  els.tweetNextPage.disabled = state.tweetPage >= page.totalPages;
+}
+
+function setTweetPage(page) {
+  state.tweetPage = Math.max(1, page);
+  closeRowActionMenu();
+  refreshStoredTweets({ resetScroll: true, includeFacets: false, includeMetrics: false });
 }
 
 function renderTweetTable(rows, options = {}) {
@@ -1330,7 +1410,7 @@ function renderTweetTable(rows, options = {}) {
     visibleIds.add(row.rowId);
     const signature = tweetRowSignature(row);
     const existing = existingRows.get(row.rowId);
-    const tr = existing?.dataset.signature === signature ? existing : createTweetRow(row, rows, signature);
+    const tr = existing?.dataset.signature === signature ? existing : createTweetRow(row, options.filteredRows || rows, rows, signature);
     if (existing && existing !== tr) existing.replaceWith(tr);
     els.tweetsBody.appendChild(tr);
   }
@@ -1339,11 +1419,11 @@ function renderTweetTable(rows, options = {}) {
     if (!visibleIds.has(rowId)) tr.remove();
   }
 
-  if (options.autoScroll && els.tweetsAutoScroll.checked) els.tweetsWrap.scrollTop = 0;
+  if (options.resetScroll || (options.autoScroll && els.tweetsAutoScroll.checked)) els.tweetsWrap.scrollTop = 0;
   else els.tweetsWrap.scrollTop = scrollTop;
 }
 
-function createTweetRow(row, rows, signature) {
+function createTweetRow(row, filteredRows, pageRows, signature) {
   const tr = document.createElement('tr');
   tr.dataset.rowId = row.rowId;
   tr.dataset.signature = signature;
@@ -1359,7 +1439,7 @@ function createTweetRow(row, rows, signature) {
   checkbox.addEventListener('click', (event) => event.stopPropagation());
   checkbox.addEventListener('change', () => {
     toggleSelection(row.rowId, checkbox.checked);
-    renderBulkBar(rows);
+    renderBulkBar(filteredRows, pageRows);
   });
   selectTd.appendChild(checkbox);
   tr.appendChild(selectTd);
@@ -1367,7 +1447,7 @@ function createTweetRow(row, rows, signature) {
   tr.append(
     tweetCell(row),
     textCell(authorLabel(row)),
-    metricsCell(row),
+    tweetMetricsCell(row),
     actionsCell(row),
   );
 
@@ -1440,23 +1520,7 @@ function textCell(value) {
   return td;
 }
 
-function capturedCell(row) {
-  const td = document.createElement('td');
-  if (state.settings.timestampFormat !== 'exact') {
-    const relative = document.createElement('div');
-    relative.textContent = formatRelative(row.capturedAt);
-    td.appendChild(relative);
-  }
-  if (state.settings.timestampFormat !== 'relative') {
-    const exact = document.createElement('div');
-    exact.className = 'capture-exact';
-    exact.textContent = formatExactTime(row.capturedAt);
-    td.appendChild(exact);
-  }
-  return td;
-}
-
-function metricsCell(row) {
+function tweetMetricsCell(row) {
   const td = document.createElement('td');
   td.className = 'metrics-cell';
   const group = document.createElement('div');
@@ -1470,6 +1534,22 @@ function metricsCell(row) {
     group.appendChild(metric);
   }
   td.appendChild(group);
+  return td;
+}
+
+function capturedCell(row) {
+  const td = document.createElement('td');
+  if (state.settings.timestampFormat !== 'exact') {
+    const relative = document.createElement('div');
+    relative.textContent = formatRelative(row.capturedAt);
+    td.appendChild(relative);
+  }
+  if (state.settings.timestampFormat !== 'relative') {
+    const exact = document.createElement('div');
+    exact.className = 'capture-exact';
+    exact.textContent = formatExactTime(row.capturedAt);
+    td.appendChild(exact);
+  }
   return td;
 }
 
@@ -1695,21 +1775,46 @@ function handleRowKeydown(event, row) {
 function openTweetDrawer(id) {
   const row = buildTweetRows().find(item => item.id === id || item.rowId === id);
   if (!row) return;
+  const focused = document.activeElement;
+  if (focused && !els.drawer.contains(focused)) state.drawerReturnFocus = focused;
   state.activeTweetId = row.id || row.rowId;
   els.drawerContent.innerHTML = drawerHtml(row);
+  els.drawer.removeAttribute('inert');
   els.drawer.classList.add('open');
   els.drawer.setAttribute('aria-hidden', 'false');
   els.drawerBackdrop.hidden = false;
   bindDrawerActions(row);
   renderAllTweets();
+  requestAnimationFrame(() => {
+    if (els.drawer.classList.contains('open')) els.closeDrawer.focus();
+  });
 }
 
 function closeTweetDrawer() {
+  const row = buildTweetRows().find(item => item.id === state.activeTweetId || item.rowId === state.activeTweetId);
+  const returnFocus = state.drawerReturnFocus;
+  if (els.drawer.contains(document.activeElement)) document.activeElement.blur();
   state.activeTweetId = null;
+  state.drawerReturnFocus = null;
   els.drawer.classList.remove('open');
   els.drawer.setAttribute('aria-hidden', 'true');
+  els.drawer.setAttribute('inert', '');
   els.drawerBackdrop.hidden = true;
   renderAllTweets();
+  restoreDrawerFocus(returnFocus, row?.rowId);
+}
+
+function restoreDrawerFocus(target, rowId) {
+  requestAnimationFrame(() => {
+    if (target?.isConnected && typeof target.focus === 'function') {
+      target.focus();
+      return;
+    }
+    if (!rowId) return;
+    [...els.tweetsBody.querySelectorAll('tr[data-row-id]')]
+      .find(tr => tr.dataset.rowId === rowId)
+      ?.focus();
+  });
 }
 
 function drawerHtml(row) {
@@ -2001,15 +2106,17 @@ function selectedOptionLabel(select, value) {
   return [...select.options].find(option => option.value === value)?.textContent || value;
 }
 
-function renderBulkBar(visibleRows = filterTweetRows(buildTweetRows())) {
+function renderBulkBar(visibleRows = filterTweetRows(buildTweetRows()), pageRows = visibleRows) {
   const visibleIds = new Set(visibleRows.map(row => row.rowId));
   for (const id of [...state.selectedIds]) {
     if (!visibleIds.has(id)) state.selectedIds.delete(id);
   }
   const count = state.selectedIds.size;
+  const pageSelected = pageRows.filter(row => state.selectedIds.has(row.rowId)).length;
   els.bulkBar.hidden = count === 0;
   els.bulkCount.textContent = `${count} selected`;
-  els.selectAllTweets.checked = count > 0 && visibleRows.every(row => state.selectedIds.has(row.rowId));
+  els.selectAllTweets.checked = pageRows.length > 0 && pageSelected === pageRows.length;
+  els.selectAllTweets.indeterminate = pageSelected > 0 && pageSelected < pageRows.length;
 }
 
 function updateHeaderLastTweet(rows) {
@@ -2178,6 +2285,52 @@ function exportCsv(rows, filename) {
   download(lines.join('\n'), filename, 'text/csv');
 }
 
+async function fetchStoredRowsForExport(filters = state.filters) {
+  const rows = [];
+  let offset = 0;
+  let total = null;
+  do {
+    const query = storedTweetQuery({
+      filters,
+      limit: 500,
+      offset,
+      includeFacets: false,
+      includeMetrics: false,
+    });
+    if (query.skipStored) break;
+    const resp = await sendMessage(query.message);
+    if (!resp?.ok) throw new Error(resp?.error || 'Stored tweets are unavailable.');
+    const page = (resp.tweets || []).map(normalizeStoredTweet);
+    rows.push(...page);
+    total = Number.isFinite(Number(resp.total)) ? Number(resp.total) : rows.length;
+    offset += page.length;
+    if (page.length === 0) break;
+    updateRefreshState(`Exporting ${rows.length.toLocaleString()} tweets...`);
+  } while (rows.length < total && offset <= STORED_TWEET_MAX_OFFSET);
+  const eventRows = filterTweetRows(state.events.map(eventToTweetRow), filters);
+  return [...rows, ...eventRows];
+}
+
+async function exportVisibleTweets() {
+  try {
+    const rows = await fetchStoredRowsForExport(state.filters);
+    exportCsv(rows, 'xport-visible-tweets.csv');
+    markUpdated();
+  } catch (e) {
+    showToast(e.message || 'Export failed', 'error');
+  }
+}
+
+async function exportAllTweets() {
+  try {
+    const rows = await fetchStoredRowsForExport(defaultTweetFilters());
+    exportJson(rows.map(exportTweet), 'xport-all-tweets.json');
+    markUpdated();
+  } catch (e) {
+    showToast(e.message || 'Export failed', 'error');
+  }
+}
+
 function download(content, filename, type) {
   const blob = new Blob([content], { type });
   const url = URL.createObjectURL(blob);
@@ -2241,7 +2394,7 @@ function bindEvents() {
     switchTab('settings');
   });
   els.refreshAll.addEventListener('click', refreshAll);
-  els.exportVisible.addEventListener('click', () => exportCsv(filterTweetRows(buildTweetRows()), 'xport-visible-tweets.csv'));
+  els.exportVisible.addEventListener('click', exportVisibleTweets);
   els.pauseCapture.addEventListener('click', async () => {
     await sendMessage({ type: 'TOGGLE_CAPTURE' });
     refreshHealth();
@@ -2280,9 +2433,13 @@ function bindEvents() {
   });
 
   els.selectAllTweets.addEventListener('change', () => {
-    for (const row of filterTweetRows(buildTweetRows())) toggleSelection(row.rowId, els.selectAllTweets.checked);
+    const filteredRows = filterTweetRows(buildTweetRows());
+    const page = currentTweetPage(filteredRows);
+    for (const row of page.rows) toggleSelection(row.rowId, els.selectAllTweets.checked);
     renderAllTweets();
   });
+  els.tweetPrevPage.addEventListener('click', () => setTweetPage(state.tweetPage - 1));
+  els.tweetNextPage.addEventListener('click', () => setTweetPage(state.tweetPage + 1));
   els.bulkExport.addEventListener('click', () => exportJson(selectedRows().map(exportTweet), 'xport-selected-tweets.json'));
   els.bulkCopyUrls.addEventListener('click', () => copyText(selectedRows().map(row => row.url).filter(Boolean).join('\n'), 'Selected URLs copied'));
   els.bulkCopyText.addEventListener('click', () => copyText(selectedRows().map(row => row.text).filter(Boolean).join('\n\n'), 'Selected text copied'));
@@ -2341,7 +2498,7 @@ function bindEvents() {
     renderAllTweets();
   });
   els.themeSelect.addEventListener('change', () => saveSettings({ theme: els.themeSelect.value }, 'Theme saved'));
-  els.exportAllTweets.addEventListener('click', () => exportJson(buildTweetRows().map(exportTweet), 'xport-all-tweets.json'));
+  els.exportAllTweets.addEventListener('click', exportAllTweets);
   els.exportAllEvents.addEventListener('click', () => exportJson(state.events, 'xport-live-events.json'));
   els.exportEvents.addEventListener('click', () => exportJson(state.events, 'xport-live-events.json'));
   els.clearViewTweets.addEventListener('click', () => {
@@ -2370,7 +2527,7 @@ function bindEvents() {
       els.tweetSearch.focus();
     }
     if (event.key === 'Enter' && document.activeElement === els.tweetSearch) {
-      const first = filterTweetRows(buildTweetRows())[0];
+      const first = currentTweetPage(filterTweetRows(buildTweetRows())).rows[0];
       if (first) openTweetDrawer(first.id || first.rowId);
     }
   });
@@ -2392,7 +2549,11 @@ function bindEvents() {
 
 function updateFilter(key, value) {
   state.filters[key] = value;
-  renderAllTweets();
+  state.tweetPage = 1;
+  closeRowActionMenu();
+  renderActiveFilters();
+  updateRefreshState(key === 'search' ? 'Searching...' : 'Refreshing...');
+  scheduleStoredTweetsRefresh(key === 'search' ? 250 : 0);
 }
 
 function updateEventFilter(key, value) {
@@ -2419,8 +2580,9 @@ function resetFilter(key) {
   };
   if (!(key in defaults)) return;
   state.filters[key] = defaults[key];
+  state.tweetPage = 1;
   syncFilterInputs();
-  renderAllTweets();
+  refreshStoredTweets({ resetScroll: true });
 }
 
 function clearFilters() {
@@ -2440,8 +2602,9 @@ function clearFilters() {
     parserErrorOnly: false,
     newOnly: false,
   });
+  state.tweetPage = 1;
   syncFilterInputs();
-  renderAllTweets();
+  refreshStoredTweets({ resetScroll: true });
 }
 
 function syncFilterInputs() {
@@ -2520,7 +2683,7 @@ function applyPendingVisualRefresh() {
   const pendingEvents = state.pendingVisualRefresh.events;
   state.pendingVisualRefresh.storedTweets = null;
   state.pendingVisualRefresh.events = null;
-  if (pendingTweets) applyStoredTweets(pendingTweets);
+  if (pendingTweets) applyStoredTweets(pendingTweets.tweets || pendingTweets, pendingTweets);
   if (pendingEvents) applyEvents(pendingEvents);
 }
 

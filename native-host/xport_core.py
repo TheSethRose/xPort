@@ -131,20 +131,69 @@ def _api_json(method, path, payload=None, query=None):
         return json.loads(resp.read() or b'{}')
 
 
-def list_stored_tweets_from_api(limit=50, offset=0, include_raw=False):
+def list_stored_tweets_from_api(
+    limit=50,
+    offset=0,
+    include_raw=False,
+    query=None,
+    author=None,
+    endpoint=None,
+    since=None,
+    until=None,
+    media=None,
+    transcription=None,
+    has_quoted=False,
+    has_reply=False,
+    sort='newest',
+    include_total=False,
+    include_facets=False,
+    include_metrics=False,
+):
     """Fetch a stored tweet page from the hosted API, including media rows."""
     limit = max(1, min(int(limit or 50), 500))
     offset = max(0, int(offset or 0))
-    query = {
+    search_query = query
+    api_query = {
         'limit': limit,
         'offset': offset,
         'include_media': 'true',
     }
     if include_raw:
-        query['include_raw'] = 'true'
-    result = _api_json('GET', '/api/tweets', query=query)
+        api_query['include_raw'] = 'true'
+    optional = {
+        'q': search_query,
+        'author': author,
+        'endpoint': endpoint,
+        'since': since,
+        'until': until,
+        'media': media,
+        'transcription': transcription,
+    }
+    for key, value in optional.items():
+        if value:
+            api_query[key] = value
+    if sort and sort != 'newest':
+        api_query['sort'] = sort
+    if has_quoted:
+        api_query['has_quoted'] = 'true'
+    if has_reply:
+        api_query['has_reply'] = 'true'
+    if include_total:
+        api_query['include_total'] = 'true'
+    if include_facets:
+        api_query['include_facets'] = 'true'
+    if include_metrics:
+        api_query['include_metrics'] = 'true'
+    result = _api_json('GET', '/api/tweets', query=api_query)
     if result.get('ok') is not True:
         raise RuntimeError(result.get('error') or 'stored tweet lookup failed')
+    if include_total or include_facets or include_metrics:
+        return {
+            'tweets': result.get('tweets') or [],
+            'total': result.get('total'),
+            'facets': result.get('facets') or {},
+            'metrics': result.get('metrics') or {},
+        }
     return result.get('tweets') or []
 
 

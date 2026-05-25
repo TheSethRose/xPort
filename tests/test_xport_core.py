@@ -274,6 +274,49 @@ class TestListStoredTweetsFromApi:
         xport_core.list_stored_tweets_from_api(limit=25, offset=5, include_raw=True)
         assert captured['url'] == 'https://xport.example/api/tweets?limit=25&offset=5&include_media=true&include_raw=true'
 
+    def test_gets_stored_tweet_metadata(self, monkeypatch):
+        monkeypatch.setattr(xport_core, 'DEFAULT_API_URL', 'https://xport.example')
+        monkeypatch.setattr(xport_core, 'DEFAULT_INGEST_TOKEN', 'secret')
+        captured = {}
+
+        class _Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b'{"ok":true,"tweets":[],"total":25,"facets":{"authors":[]},"metrics":{"tweet_count":25}}'
+
+        def fake_urlopen(req, timeout):
+            captured['url'] = req.full_url
+            return _Response()
+
+        monkeypatch.setattr(urllib.request, 'urlopen', fake_urlopen)
+
+        result = xport_core.list_stored_tweets_from_api(
+            limit=100,
+            offset=200,
+            query='codex',
+            author='seth',
+            endpoint='HomeTimeline',
+            media='video',
+            transcription='done',
+            has_quoted=True,
+            sort='oldest',
+            include_total=True,
+            include_facets=True,
+            include_metrics=True,
+        )
+
+        assert result == {'tweets': [], 'total': 25, 'facets': {'authors': []}, 'metrics': {'tweet_count': 25}}
+        assert captured['url'] == (
+            'https://xport.example/api/tweets?limit=100&offset=200&include_media=true'
+            '&q=codex&author=seth&endpoint=HomeTimeline&media=video&transcription=done'
+            '&sort=oldest&has_quoted=true&include_total=true&include_facets=true&include_metrics=true'
+        )
+
 
 class TestImageAssetJobs:
     def test_collects_top_level_and_article_photos(self):

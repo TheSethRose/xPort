@@ -669,9 +669,11 @@ input[type="checkbox"] {
   color: var(--text);
 }
 
-.bulk-bar {
+.bulk-bar,
+.tweet-pagination {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 8px;
   padding: 10px 12px;
   margin-bottom: 12px;
@@ -679,8 +681,19 @@ input[type="checkbox"] {
   font-size: 12px;
 }
 
-.bulk-bar[hidden] {
+.bulk-bar[hidden],
+.tweet-pagination[hidden] {
   display: none;
+}
+
+.bulk-bar {
+  justify-content: flex-start;
+}
+
+.pagination-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .table-wrap {
@@ -1269,6 +1282,10 @@ body.density-compact .icon-action-btn {
   color: var(--text);
   box-shadow: var(--shadow-panel);
   font-size: 12px;
+}
+
+.toast[hidden] {
+  display: none;
 }
 
 .toast-success .svg-icon,

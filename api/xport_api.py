@@ -398,17 +398,72 @@ def list_tweets(
     since=None,
     until=None,
     endpoint=None,
+    media=None,
+    transcription=None,
+    has_quoted=False,
+    has_reply=False,
+    sort='newest',
     limit=50,
     offset=0,
     include_raw=False,
     include_media=False,
+    include_total=False,
+    include_facets=False,
+    include_metrics=False,
+):
+    where, params = _tweet_filter_where(
+        query=query,
+        author=author,
+        since=since,
+        until=until,
+        endpoint=endpoint,
+        media=media,
+        transcription=transcription,
+        has_quoted=has_quoted,
+        has_reply=has_reply,
+    )
+    sql = f"""
+        select {_tweet_projection(include_raw)}
+        from tweets
+        {where}
+        order by {_tweet_order_by(sort)}
+        limit %s offset %s
+    """
+    query_params = params + [limit, offset]
+    with connect() as conn:
+        rows = conn.execute(sql, query_params).fetchall()
+        tweets = [_row_to_json(row) for row in rows]
+        if include_media and tweets:
+            _attach_media(conn, tweets)
+        if include_total or include_facets or include_metrics:
+            result = {'tweets': tweets}
+            if include_total:
+                result['total'] = conn.execute(f"select count(*) as total from tweets {where}", params).fetchone()['total']
+            if include_facets:
+                result['facets'] = tweet_facets(conn)
+            if include_metrics:
+                result['metrics'] = tweet_list_metrics(conn)
+            return result
+    return tweets
+
+
+def _tweet_filter_where(
+    query=None,
+    author=None,
+    since=None,
+    until=None,
+    endpoint=None,
+    media=None,
+    transcription=None,
+    has_quoted=False,
+    has_reply=False,
 ):
     clauses = []
     params = []
     if query:
-        clauses.append('(text ilike %s or raw::text ilike %s)')
+        clauses.append('(text ilike %s or url ilike %s or author_username ilike %s or author_name ilike %s or raw::text ilike %s)')
         needle = f'%{query}%'
-        params.extend([needle, needle])
+        params.extend([needle, needle, needle, needle, needle])
     if author:
         clauses.append('lower(author_username) = lower(%s)')
         params.append(author.lstrip('@'))
@@ -421,22 +476,115 @@ def list_tweets(
     if endpoint:
         clauses.append('source_endpoint = %s')
         params.append(endpoint)
+    if media:
+        _add_media_filter(clauses, media)
+    if transcription:
+        _add_transcription_filter(clauses, transcription)
+    if has_quoted:
+        clauses.append("coalesce(raw->>'quoted_tweet_id', '') <> ''")
+    if has_reply:
+        clauses.append("coalesce(raw->>'in_reply_to', '') <> ''")
+    return f"where {' and '.join(clauses)}" if clauses else '', params
 
-    where = f"where {' and '.join(clauses)}" if clauses else ''
-    sql = f"""
-        select {_tweet_projection(include_raw)}
+
+def _add_media_filter(clauses, media):
+    if media == 'none':
+        clauses.append('not exists (select 1 from tweet_media tm where tm.tweet_id = tweets.tweet_id)')
+    elif media == 'media':
+        clauses.append('exists (select 1 from tweet_media tm where tm.tweet_id = tweets.tweet_id)')
+    elif media == 'image':
+        clauses.append("exists (select 1 from tweet_media tm where tm.tweet_id = tweets.tweet_id and tm.media_type = 'photo')")
+    elif media in {'video', 'gif'}:
+        media_type = 'animated_gif' if media == 'gif' else 'video'
+        clauses.append(f"exists (select 1 from tweet_media tm where tm.tweet_id = tweets.tweet_id and tm.media_type = '{media_type}')")
+    elif media == 'link':
+        clauses.append(_tweet_link_clause())
+    elif media == 'multiple':
+        clauses.append(f"""(
+            (select count(*) from tweet_media tm where tm.tweet_id = tweets.tweet_id) > 1
+            or (
+                exists (select 1 from tweet_media tm where tm.tweet_id = tweets.tweet_id)
+                and {_tweet_link_clause()}
+            )
+        )""")
+
+
+def _add_transcription_filter(clauses, transcription):
+    if transcription == 'has_text':
+        clauses.append("exists (select 1 from tweet_media tm where tm.tweet_id = tweets.tweet_id and coalesce(tm.transcript_text, '') <> '')")
+    elif transcription in {'not_requested', 'queued', 'transcribing', 'done', 'skipped', 'error'}:
+        clauses.append(
+            "exists (select 1 from tweet_media tm where tm.tweet_id = tweets.tweet_id and tm.media_type in ('video', 'animated_gif') and tm.transcript_status = "
+            + _sql_literal(transcription)
+            + ")"
+        )
+
+
+def _tweet_link_clause():
+    return """(
+        coalesce(text, '') ~* 'https?://'
+        or case
+            when jsonb_typeof(raw->'urls') = 'array' then jsonb_array_length(raw->'urls') > 0
+            else false
+        end
+    )"""
+
+
+def _tweet_order_by(sort):
+    if sort == 'oldest':
+        return 'coalesce(created_at, captured_at) asc, captured_at asc'
+    if sort == 'author':
+        return "lower(coalesce(author_username, '')) asc, coalesce(created_at, captured_at) desc, captured_at desc"
+    if sort in {'source', 'status'}:
+        return "coalesce(source_endpoint, '') asc, coalesce(created_at, captured_at) desc, captured_at desc"
+    if sort == 'media':
+        return "(exists (select 1 from tweet_media tm where tm.tweet_id = tweets.tweet_id)) desc, coalesce(created_at, captured_at) desc, captured_at desc"
+    return 'coalesce(created_at, captured_at) desc, captured_at desc'
+
+
+def _sql_literal(value):
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def tweet_facets(conn):
+    author_rows = conn.execute(
+        """
+        select author_username as value, max(author_name) as label, count(*) as count
         from tweets
-        {where}
-        order by coalesce(created_at, captured_at) desc, captured_at desc
-        limit %s offset %s
-    """
-    params.extend([limit, offset])
-    with connect() as conn:
-        rows = conn.execute(sql, params).fetchall()
-        tweets = [_row_to_json(row) for row in rows]
-        if include_media and tweets:
-            _attach_media(conn, tweets)
-    return tweets
+        where author_username is not null and author_username <> ''
+        group by author_username
+        order by lower(author_username)
+        limit 1000
+        """
+    ).fetchall()
+    endpoint_rows = conn.execute(
+        """
+        select source_endpoint as value, source_endpoint as label, count(*) as count
+        from tweets
+        where source_endpoint is not null and source_endpoint <> ''
+        group by source_endpoint
+        order by source_endpoint
+        limit 1000
+        """
+    ).fetchall()
+    return {
+        'authors': [_row_to_json(row) for row in author_rows],
+        'endpoints': [_row_to_json(row) for row in endpoint_rows],
+        'sources': [_row_to_json(row) for row in endpoint_rows],
+    }
+
+
+def tweet_list_metrics(conn):
+    row = conn.execute(
+        """
+        select
+          count(*) as tweet_count,
+          (select count(distinct tweet_id) from tweet_media) as media_count,
+          count(distinct author_username) filter (where author_username is not null and author_username <> '') as author_count
+        from tweets
+        """
+    ).fetchone()
+    return _row_to_json(row)
 
 
 def get_tweet(tweet_id, include_raw=False, include_media=False):
@@ -681,12 +829,26 @@ class ApiHandler(BaseHTTPRequestHandler):
                 since=value('since'),
                 until=value('until'),
                 endpoint=value('endpoint'),
+                media=value('media'),
+                transcription=value('transcription'),
+                has_quoted=_bool_param(value('has_quoted')),
+                has_reply=_bool_param(value('has_reply')),
+                sort=value('sort') or 'newest',
                 limit=_bounded_int(value('limit'), 50, 1, 500),
                 offset=_bounded_int(value('offset'), 0, 0, 100000),
                 include_raw=_bool_param(value('include_raw')),
                 include_media=_bool_param(value('include_media')),
+                include_total=_bool_param(value('include_total')),
+                include_facets=_bool_param(value('include_facets')),
+                include_metrics=_bool_param(value('include_metrics')),
             )
-            _json_response(self, 200, {'ok': True, 'tweets': tweets})
+            if isinstance(tweets, dict):
+                payload = {'ok': True, 'tweets': tweets.get('tweets') or []}
+                if 'total' in tweets:
+                    payload['total'] = tweets['total']
+            else:
+                payload = {'ok': True, 'tweets': tweets}
+            _json_response(self, 200, payload)
         except Exception as e:
             _json_response(self, 500, {'ok': False, 'error': str(e)})
 

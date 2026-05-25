@@ -237,8 +237,24 @@ class DaemonHandler(BaseHTTPRequestHandler):
                 limit=body.get('limit', 50),
                 offset=body.get('offset', 0),
                 include_raw=bool(body.get('includeRaw') or body.get('include_raw')),
+                query=body.get('query') or body.get('q'),
+                author=body.get('author'),
+                endpoint=body.get('endpoint'),
+                since=body.get('since'),
+                until=body.get('until'),
+                media=body.get('media'),
+                transcription=body.get('transcription'),
+                has_quoted=bool(body.get('hasQuoted') or body.get('has_quoted')),
+                has_reply=bool(body.get('hasReply') or body.get('has_reply')),
+                sort=body.get('sort') or 'newest',
+                include_total=bool(body.get('includeTotal') or body.get('include_total')),
+                include_facets=bool(body.get('includeFacets') or body.get('include_facets')),
+                include_metrics=bool(body.get('includeMetrics') or body.get('include_metrics')),
             )
-            self._send_json({'ok': True, 'tweets': tweets})
+            if isinstance(tweets, dict):
+                self._send_json({'ok': True, **tweets})
+            else:
+                self._send_json({'ok': True, 'tweets': tweets})
         except ValueError as e:
             self._send_json({'ok': False, 'error': str(e)}, 400)
         except Exception as e:
