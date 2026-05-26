@@ -7,7 +7,6 @@ XPort is a Chrome extension, local daemon, and hosted ingestion API for capturin
 - Platform: macOS, Linux, Windows
 - Browser: Chrome
 - License: [MIT](LICENSE)
-- Coverage: [Codecov](https://codecov.io/gh/TheSethRose/xPort)
 
 ## Overview
 
@@ -231,7 +230,7 @@ export XPORT_OUTPUT_DIR="$HOME/Documents/xport-data"
 | `XPORT_OUTPUT_DIR` | `~/Downloads/xport` | Fallback for debug logs, dumps, media, and videos |
 | Dashboard | N/A | Opens to stored tweets with searchable filters, transcription status, transcript detail, export actions, live events, parser tools, transport diagnostics, and settings |
 
-On macOS, the HTTP daemon installed by `install.sh` runs outside browser TCC sandboxes and can write to protected paths like `~/Documents` and iCloud Drive after a one-time macOS permission prompt.
+On macOS, the HTTP daemon installed by `install.sh` runs outside browser TCC sandboxes and can write to protected user folders after the required macOS permission prompt.
 
 ### PostgreSQL Capture
 
@@ -519,7 +518,7 @@ uv run --with pytest pytest tests/test_xport_skill_cli.py -v
 cd tests/e2e && npm ci && npm test
 ```
 
-CI runs the Python and Node suites on every push and pull request to `main` with coverage uploaded to [Codecov](https://codecov.io/gh/TheSethRose/xPort). The E2E workflow separately runs the Chromium extension, daemon, and ingest API test.
+CI runs the Python and Node suites on every push and pull request to `main`. The E2E workflow separately runs the Chromium extension, daemon, and ingest API test.
 
 Parser fixture packs live under `tests/fixtures/`. Raw captures stay local in `tests/fixtures/private-raw/`, which is gitignored. Committed anonymized packs live in `tests/fixtures/sanitized/`. The anonymization methodology and review checklist are documented in `tests/fixtures/FIXTURES.md`.
 
