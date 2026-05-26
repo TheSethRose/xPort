@@ -548,11 +548,13 @@ function enqueueTweets(tweets, endpoint = 'unknown') {
       }
     }
 
-    if (!dedupTweet(tweet, seenIds, mediaSeenIds)) {
-      emitTraceEvent({ timestamp: Date.now(), endpoint, tweetId: tweet.id, tweetLabel: traceTweetLabel(tweet), status: 'DEDUPLICATED', reason: 'seenIds' });
+    const wasSeen = !!(tweet.id && seenIds.has(tweet.id));
+    const isAccepted = dedupTweet(tweet, seenIds, mediaSeenIds);
+    buffer.push(tweet);
+    if (!isAccepted || wasSeen) {
+      emitTraceEvent({ timestamp: Date.now(), endpoint, tweetId: tweet.id, tweetLabel: traceTweetLabel(tweet), status: 'DEDUPLICATED', reason: 'queued update for existing tweet' });
       continue;
     }
-    buffer.push(tweet);
     pushRecentCapturedTweet(tweet);
     newCount++;
     emitTraceEvent({ timestamp: Date.now(), endpoint, tweetId: tweet.id, tweetLabel: traceTweetLabel(tweet), status: 'ACCEPTED', reason: null });
@@ -566,7 +568,7 @@ function enqueueTweets(tweets, endpoint = 'unknown') {
   }
   const dupeCount = tweets.length - newCount;
   if (dupeCount > 0) {
-    console.log(`[XPort] Dedup: ${newCount} new, ${dupeCount} duplicates skipped (seenIds: ${seenIds.size})`);
+    console.log(`[XPort] Dedup: ${newCount} new, ${dupeCount} duplicate updates queued (seenIds: ${seenIds.size})`);
   }
 
   sessionCount += newCount;

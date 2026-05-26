@@ -47,10 +47,10 @@ def test_normalize_tweet_skips_invalid_tweet(api_module):
 def test_tweet_order_by_supports_dashboard_dataset_sorts(api_module):
     assert api_module._tweet_order_by('captured_newest') == 'captured_at desc, coalesce(created_at, captured_at) desc'
     assert api_module._tweet_order_by('captured_oldest') == 'captured_at asc, coalesce(created_at, captured_at) asc'
-    assert api_module._tweet_order_by('views') == 'view_count desc nulls last, coalesce(created_at, captured_at) desc, captured_at desc'
-    assert api_module._tweet_order_by('likes') == 'like_count desc nulls last, coalesce(created_at, captured_at) desc, captured_at desc'
+    assert api_module._tweet_order_by('views') == 'view_count desc nulls last, created_at desc nulls last, captured_at desc'
+    assert api_module._tweet_order_by('likes') == 'like_count desc nulls last, created_at desc nulls last, captured_at desc'
     assert api_module._tweet_order_by('engagement').startswith('(coalesce(like_count, 0) + coalesce(repost_count, 0)')
-    assert api_module._tweet_order_by('unknown') == 'coalesce(created_at, captured_at) desc, captured_at desc'
+    assert api_module._tweet_order_by('unknown') == 'created_at desc nulls last, captured_at desc'
 
 
 def test_normalize_media_maps_top_level_and_article_media(api_module):

@@ -183,7 +183,7 @@ describe('recoverStagedPayloads', () => {
     assert.equal(stgKeys.length, 0);
   });
 
-  it('dedup: skips tweets already in seenIds', async () => {
+  it('dedup: queues seen tweets as updates without counting them as new', async () => {
     const env = setup({
       extractTweets: (_ep, data) => data?.tweets || [],
     });
@@ -196,8 +196,10 @@ describe('recoverStagedPayloads', () => {
 
     await env.recoverStagedPayloads();
 
-    assert.equal(env.buffer.length, 1);
-    assert.equal(env.buffer[0].id, '2');
+    assert.equal(env.buffer.length, 2);
+    assert.equal(env.buffer[0].id, '1');
+    assert.equal(env.buffer[1].id, '2');
+    assert.equal(env.traceEvents.find(e => e.tweetId === '1')?.status, 'DEDUPLICATED');
   });
 
   it('dedup: enqueues a seen tweet once when recovered data adds media', async () => {
@@ -219,6 +221,7 @@ describe('recoverStagedPayloads', () => {
 
     assert.equal(env.buffer.length, 1);
     assert.equal(env.buffer[0].id, '1');
+    assert.equal(env.traceEvents.find(e => e.tweetId === '1')?.status, 'DEDUPLICATED');
     assert.ok(env.mediaSeenIds.has('1'));
   });
 

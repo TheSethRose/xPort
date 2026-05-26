@@ -538,9 +538,9 @@ def _tweet_link_clause():
 
 
 def _tweet_order_by(sort):
-    newest = 'coalesce(created_at, captured_at) desc, captured_at desc'
+    newest = 'created_at desc nulls last, captured_at desc'
     if sort == 'oldest':
-        return 'coalesce(created_at, captured_at) asc, captured_at asc'
+        return 'created_at asc nulls last, captured_at asc'
     if sort == 'captured_newest':
         return 'captured_at desc, coalesce(created_at, captured_at) desc'
     if sort == 'captured_oldest':

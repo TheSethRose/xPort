@@ -669,7 +669,7 @@ function normalizeEvents(events) {
   }));
 }
 
-function buildTweetRows() {
+function buildTweetRows(filters = state.filters) {
   const byId = new Map();
   for (const tweet of state.storedTweets) {
     if (!tweet.id || state.hiddenIds.has(tweet.rowId)) continue;
@@ -685,10 +685,19 @@ function buildTweetRows() {
       if (event.status === 'PARSER_ERROR') existing.status = 'PARSER_ERROR';
       continue;
     }
+    if (!shouldRenderStandaloneEvent(event, filters)) continue;
     byId.set(eventId, eventToTweetRow(event));
   }
 
   return [...byId.values()].filter(row => !state.hiddenIds.has(row.rowId));
+}
+
+function shouldRenderStandaloneEvent(event, filters = state.filters) {
+  if (event.status === 'PARSER_ERROR' || event.status === 'STAGE_FAILED' || event.status === 'BUFFER_OVERFLOW') return true;
+  if (filters.duplicateOnly && event.status === 'DEDUPLICATED') return true;
+  if (filters.newOnly && event.status === 'ACCEPTED') return true;
+  if (filters.status !== 'all' && event.status === filters.status && event.status !== 'ACCEPTED') return true;
+  return false;
 }
 
 function eventToTweetRow(event) {
@@ -1413,14 +1422,14 @@ function matchesTimeFilter(row, now, filters = state.filters) {
 
 function sortTweetRows(rows, filters = state.filters) {
   const sorted = [...rows];
-  const byPostedNewest = (a, b) => dateValue(b.createdAt || b.capturedAt) - dateValue(a.createdAt || a.capturedAt)
+  const byPostedNewest = (a, b) => postedNewestValue(b) - postedNewestValue(a)
     || dateValue(b.capturedAt) - dateValue(a.capturedAt);
   const byCapturedNewest = (a, b) => dateValue(b.capturedAt) - dateValue(a.capturedAt);
   if (METRIC_SORTS.has(filters.sort)) {
     return sorted.sort((a, b) => metricSortValue(b, filters.sort) - metricSortValue(a, filters.sort) || byPostedNewest(a, b));
   }
   switch (filters.sort) {
-    case 'oldest': return sorted.sort((a, b) => dateValue(a.createdAt || a.capturedAt) - dateValue(b.createdAt || b.capturedAt)
+    case 'oldest': return sorted.sort((a, b) => postedOldestValue(a) - postedOldestValue(b)
       || dateValue(a.capturedAt) - dateValue(b.capturedAt));
     case 'captured_newest': return sorted.sort(byCapturedNewest);
     case 'captured_oldest': return sorted.sort((a, b) => dateValue(a.capturedAt) - dateValue(b.capturedAt));
@@ -1430,6 +1439,14 @@ function sortTweetRows(rows, filters = state.filters) {
     case 'media': return sorted.sort((a, b) => mediaSortValue(b) - mediaSortValue(a) || byPostedNewest(a, b));
     default: return sorted.sort(byPostedNewest);
   }
+}
+
+function postedNewestValue(row) {
+  return row.createdAt ? dateValue(row.createdAt) : -Infinity;
+}
+
+function postedOldestValue(row) {
+  return row.createdAt ? dateValue(row.createdAt) : Infinity;
 }
 
 function metricSortValue(row, sort) {

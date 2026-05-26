@@ -68,8 +68,8 @@ Capture flow:
 1. `content-main.js` patches `fetch` and `XMLHttpRequest.open()` in the MAIN world to observe GraphQL responses as they arrive.
 2. Payloads are relayed through a random-named `CustomEvent` to `content-bridge.js`.
 3. `content-bridge.js` forwards payloads to `background.js`.
-4. `background.js` parses, normalizes, deduplicates, and batches tweets in daemon POSTs of up to 50.
-5. If a later response adds media for a tweet previously captured as text-only, that media-bearing copy is allowed through once so Postgres can upsert `tweet_media` rows.
+4. `background.js` parses, normalizes, deduplicates new-capture counters, and batches tweets in daemon POSTs of up to 50.
+5. Duplicate captures are still sent as Postgres upserts, so revisiting a tweet updates the stored row without creating another tweet.
 6. `xport_daemon.py` forwards batches to the hosted API configured with `XPORT_API_URL` and `XPORT_INGEST_TOKEN`.
 7. After successful ingest, captured `pbs.twimg.com` photos are queued for daemon-side storage.
 8. If the API is missing or rejects a batch, the extension keeps parsed tweets buffered and shows the ingest error.

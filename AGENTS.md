@@ -62,6 +62,7 @@ Important tweet behavior:
 - Retweets store the original full text, not truncated `RT @user:` text.
 - Article tweets bypass dedup so `TweetResultByRestId` can replace timeline stubs.
 - Media-bearing duplicates bypass dedup once when an earlier capture had no media.
+- Duplicate captures are still sent to Postgres as upserts so revisiting a tweet updates the stored row without adding a second tweet.
 - Top-level `media[]` does not include `local_path`; consumers reconstruct `media/<tweet_id>/<basename(url)>`.
 
 ## Parser and Fixtures
@@ -112,7 +113,7 @@ macOS/Linux installs auto-use `native-host/xport_transcribe_parakeet.sh` when `p
 ## UI Rules
 
 - Popup answers capture health first, then current-session count plus stored Postgres all-time count, pause/resume, recent session tweets, and dashboard links.
-- Dashboard opens tweet-first. Tweets tab pages stored Postgres tweets via `/stored-tweets`, supplemented by related current-session capture events, and renders the table 100 rows per page. Keep tweet search/filter/sort, including date and metric sorts, server-side so the browser does not hydrate the full tweet history.
+- Dashboard opens tweet-first. Tweets tab pages stored Postgres tweets via `/stored-tweets`, supplemented by related current-session capture events, and renders the table 100 rows per page. Default posted-date sorts must not promote event-only rows that lack `created_at`; use captured-date sorts for recency-by-capture. Keep tweet search/filter/sort, including date and metric sorts, server-side so the browser does not hydrate the full tweet history.
 - Tweets table header selection stays page-scoped. Use `Select all N matching` for query-scoped bulk actions across all matching paginated tweets; resolve matching rows lazily only when a bulk action needs the rows.
 - Live Events is current-session only. Debug, transport, parser, and settings are secondary tabs.
 - Stored tweets and capture events keep auto-refresh and auto-scroll controls.
