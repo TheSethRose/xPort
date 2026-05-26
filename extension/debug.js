@@ -71,6 +71,15 @@ const state = {
   },
 };
 
+const FILTER_KEYS = new Set(Object.keys(state.filters));
+const HTML_ENTITIES = {
+  '&': '&amp;',
+  '<': '&lt;',
+  '>': '&gt;',
+  '"': '&quot;',
+  "'": '&#039;',
+};
+
 const $ = (id) => document.getElementById(id);
 
 const els = {
@@ -2807,8 +2816,8 @@ function bindEvents() {
 }
 
 function updateFilter(key, value) {
+  if (!setFilterValue(key, value)) return;
   if (key !== 'sort') clearSelection();
-  state.filters[key] = value;
   state.tweetPage = 1;
   closeRowActionMenu();
   renderActiveFilters();
@@ -2817,7 +2826,7 @@ function updateFilter(key, value) {
 }
 
 function updateEventFilter(key, value) {
-  state.eventFilters[key] = value;
+  if (!setEventFilterValue(key, value)) return;
   renderEvents();
 }
 
@@ -2838,12 +2847,80 @@ function resetFilter(key) {
     parserErrorOnly: false,
     newOnly: false,
   };
-  if (!(key in defaults)) return;
+  if (!Object.prototype.hasOwnProperty.call(defaults, key) || !FILTER_KEYS.has(key)) return;
   if (key !== 'sort') clearSelection();
-  state.filters[key] = defaults[key];
+  setFilterValue(key, defaults[key]);
   state.tweetPage = 1;
   syncFilterInputs();
   refreshStoredTweets({ resetScroll: true });
+}
+
+function setFilterValue(key, value) {
+  switch (key) {
+    case 'search':
+      state.filters.search = value;
+      return true;
+    case 'status':
+      state.filters.status = value;
+      return true;
+    case 'source':
+      state.filters.source = value;
+      return true;
+    case 'endpoint':
+      state.filters.endpoint = value;
+      return true;
+    case 'media':
+      state.filters.media = value;
+      return true;
+    case 'transcription':
+      state.filters.transcription = value;
+      return true;
+    case 'author':
+      state.filters.author = value;
+      return true;
+    case 'time':
+      state.filters.time = value;
+      return true;
+    case 'sort':
+      state.filters.sort = value;
+      return true;
+    case 'hasQuoted':
+      state.filters.hasQuoted = value;
+      return true;
+    case 'hasReply':
+      state.filters.hasReply = value;
+      return true;
+    case 'duplicateOnly':
+      state.filters.duplicateOnly = value;
+      return true;
+    case 'parserErrorOnly':
+      state.filters.parserErrorOnly = value;
+      return true;
+    case 'newOnly':
+      state.filters.newOnly = value;
+      return true;
+    default:
+      return false;
+  }
+}
+
+function setEventFilterValue(key, value) {
+  switch (key) {
+    case 'search':
+      state.eventFilters.search = value;
+      return true;
+    case 'status':
+      state.eventFilters.status = value;
+      return true;
+    case 'endpoint':
+      state.eventFilters.endpoint = value;
+      return true;
+    case 'reason':
+      state.eventFilters.reason = value;
+      return true;
+    default:
+      return false;
+  }
 }
 
 function clearFilters() {
@@ -3133,27 +3210,28 @@ function csvCell(value) {
 
 function highlight(text, query) {
   const safe = escapeHtml(text);
-  const needle = query.trim();
+  const needle = escapeHtml(query.trim());
   if (!needle) return safe;
-  const escapedNeedle = escapeRegExp(escapeHtml(needle));
-  return safe.replace(new RegExp(escapedNeedle, 'gi'), match => `<mark>${match}</mark>`);
-}
-
-function escapeRegExp(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const lowerSafe = safe.toLocaleLowerCase();
+  const lowerNeedle = needle.toLocaleLowerCase();
+  let out = '';
+  let start = 0;
+  let index = lowerSafe.indexOf(lowerNeedle, start);
+  while (index !== -1) {
+    out += safe.slice(start, index);
+    out += `<mark>${safe.slice(index, index + needle.length)}</mark>`;
+    start = index + needle.length;
+    index = lowerSafe.indexOf(lowerNeedle, start);
+  }
+  return out + safe.slice(start);
 }
 
 function escapeHtml(value) {
-  return String(value ?? '')
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#039;');
+  return String(value ?? '').replace(/[&<>"']/g, char => HTML_ENTITIES[char]);
 }
 
 function escapeAttr(value) {
-  return escapeHtml(value).replaceAll('`', '&#096;');
+  return escapeHtml(value).replace(/`/g, '&#096;');
 }
 
 async function init() {

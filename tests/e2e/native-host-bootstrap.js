@@ -19,7 +19,7 @@
  *   node tests/e2e/native-host-bootstrap.js --verify
  */
 
-import { spawnSync, spawn, execSync } from 'node:child_process';
+import { spawnSync, spawn, execFileSync } from 'node:child_process';
 import {
   existsSync, mkdirSync, readFileSync, writeFileSync,
   copyFileSync, unlinkSync, openSync, closeSync,
@@ -71,9 +71,14 @@ const MANIFEST_PATH = join(getManifestDir(), `${HOST_NAME}.json`);
 const BACKUP_PATH = MANIFEST_PATH + '.e2e-backup';
 
 function computeExtensionId() {
-  const der = execSync(
-    `openssl rsa -in "${PEM_PATH}" -pubout -outform DER 2>/dev/null`,
-  );
+  const der = execFileSync('openssl', [
+    'rsa',
+    '-in',
+    PEM_PATH,
+    '-pubout',
+    '-outform',
+    'DER',
+  ], { stderr: 'ignore' });
   const hash = createHash('sha256').update(der).digest('hex');
   const HEX = '0123456789abcdef';
   const ALPHA = 'abcdefghijklmnop';
@@ -137,7 +142,7 @@ async function waitForDaemon(maxMs = 8000) {
 function ensureToken() {
   mkdirSync(XPORT_DIR, { recursive: true, mode: 0o700 });
   if (existsSync(SECRET_PATH)) {
-    console.log(`  token: reusing ${SECRET_PATH}`);
+    console.log('  token: reusing %s', SECRET_PATH);
     return;
   }
   const r = spawnSync('python3', [
@@ -147,7 +152,7 @@ function ensureToken() {
   writeFileSync(SECRET_PATH, r.stdout.toString().trim() + '\n', {
     mode: 0o600,
   });
-  console.log(`  token: generated ${SECRET_PATH}`);
+  console.log('  token: generated %s', SECRET_PATH);
 }
 
 function installWrapper() {
@@ -159,7 +164,7 @@ function installWrapper() {
     '',
   ].join('\n');
   writeFileSync(WRAPPER_PATH, script, { mode: 0o755 });
-  console.log(`  wrapper: ${WRAPPER_PATH}`);
+  console.log('  wrapper: %s', WRAPPER_PATH);
 }
 
 function installManifest(extensionId) {
@@ -168,7 +173,7 @@ function installManifest(extensionId) {
   // Back up existing manifest (once — don't overwrite a previous backup)
   if (existsSync(MANIFEST_PATH) && !existsSync(BACKUP_PATH)) {
     copyFileSync(MANIFEST_PATH, BACKUP_PATH);
-    console.log(`  manifest: backed up existing → ${BACKUP_PATH}`);
+    console.log('  manifest: backed up existing -> %s', BACKUP_PATH);
   }
 
   writeFileSync(
@@ -185,12 +190,12 @@ function installManifest(extensionId) {
       2,
     ) + '\n',
   );
-  console.log(`  manifest: ${MANIFEST_PATH}`);
+  console.log('  manifest: %s', MANIFEST_PATH);
 }
 
 async function ensureDaemon() {
   if (await isDaemonUp()) {
-    console.log(`  daemon: already running on :${DAEMON_PORT}`);
+    console.log('  daemon: already running on :%s', DAEMON_PORT);
     return false; // we did not start it
   }
 
@@ -207,7 +212,7 @@ async function ensureDaemon() {
   closeSync(logFd);
 
   writeFileSync(PID_FILE, child.pid + '\n');
-  console.log(`  daemon: started PID ${child.pid} (log: ${DAEMON_LOG})`);
+  console.log('  daemon: started PID %s (log: %s)', child.pid, DAEMON_LOG);
 
   if (!(await waitForDaemon())) {
     let tail = '(no log)';
@@ -216,7 +221,7 @@ async function ensureDaemon() {
     }
     throw new Error(`Daemon failed to start within 8 s.\nRecent log:\n${tail}`);
   }
-  console.log(`  daemon: ready on :${DAEMON_PORT}`);
+  console.log('  daemon: ready on :%s', DAEMON_PORT);
   return true; // we started it
 }
 
@@ -233,7 +238,7 @@ function verifyManifest(extensionId) {
   if (!m.allowed_origins?.includes(origin)) {
     throw new Error(`Manifest missing origin ${origin}`);
   }
-  console.log(`  manifest: OK`);
+  console.log('  manifest: OK');
 }
 
 function verifyNativeHost() {
@@ -272,7 +277,9 @@ function verifyNativeHost() {
   }
 
   console.log(
-    `  native host: OK (token ${resp.token.length} chars, port ${resp.port})`,
+    '  native host: OK (token %s chars, port %s)',
+    resp.token.length,
+    resp.port,
   );
 }
 
@@ -281,7 +288,7 @@ async function verifyDaemon() {
   if (!res.ok) {
     throw new Error(`Daemon /status not ok: ${JSON.stringify(res)}`);
   }
-  console.log(`  daemon: OK (v${res.version} on :${DAEMON_PORT})`);
+  console.log('  daemon: OK (v%s on :%s)', res.version, DAEMON_PORT);
 }
 
 // ---------------------------------------------------------------------------
@@ -296,9 +303,9 @@ function teardown() {
     const pid = parseInt(readFileSync(PID_FILE, 'utf8').trim(), 10);
     try {
       process.kill(pid, 'SIGTERM');
-      console.log(`  daemon: stopped PID ${pid}`);
+      console.log('  daemon: stopped PID %s', pid);
     } catch (e) {
-      console.log(`  daemon: PID ${pid} already gone`);
+      console.log('  daemon: PID %s already gone', pid);
     }
     unlinkSync(PID_FILE);
   }
@@ -308,13 +315,13 @@ function teardown() {
   if (existsSync(BACKUP_PATH)) {
     copyFileSync(BACKUP_PATH, MANIFEST_PATH);
     unlinkSync(BACKUP_PATH);
-    console.log(`  manifest: restored from backup`);
+    console.log('  manifest: restored from backup');
   } else if (existsSync(MANIFEST_PATH)) {
     try {
       const m = JSON.parse(readFileSync(MANIFEST_PATH, 'utf8'));
       if (m.description?.includes('E2E test')) {
         unlinkSync(MANIFEST_PATH);
-        console.log(`  manifest: removed test manifest`);
+        console.log('  manifest: removed test manifest');
       }
     } catch { /* leave it */ }
   }
@@ -322,7 +329,7 @@ function teardown() {
   // Remove E2E wrapper (only present if --with-manifest was used)
   if (existsSync(WRAPPER_PATH)) {
     unlinkSync(WRAPPER_PATH);
-    console.log(`  wrapper: removed`);
+    console.log('  wrapper: removed');
   }
 
   console.log('[teardown] done');
@@ -334,7 +341,7 @@ function teardown() {
 
 async function setup(withManifest = false) {
   const extensionId = computeExtensionId();
-  console.log(`[setup] extension ID: ${extensionId}\n`);
+  console.log('[setup] extension ID: %s\n', extensionId);
 
   ensureToken();
   if (withManifest) {
@@ -350,7 +357,10 @@ async function setup(withManifest = false) {
   }
   await verifyDaemon();
 
-  console.log(`\n[setup] done — daemon ready for E2E tests${withManifest ? ' (native host manifest installed)' : ''}`);
+  console.log(
+    '\n[setup] done - daemon ready for E2E tests%s',
+    withManifest ? ' (native host manifest installed)' : '',
+  );
 }
 
 async function verify(withManifest = false) {
@@ -371,13 +381,13 @@ try {
   else if (cmd === '--teardown') teardown();
   else if (cmd === '--verify') await verify(withManifest);
   else {
-    console.error(`Unknown command: ${cmd}`);
+    console.error('Unknown command: %s', cmd);
     console.error(
       'Usage: node native-host-bootstrap.js [--setup|--teardown|--verify] [--with-manifest]',
     );
     process.exit(1);
   }
 } catch (e) {
-  console.error(`\nFATAL: ${e.message}`);
+  console.error('\nFATAL: %s', e.message);
   process.exit(1);
 }

@@ -14,6 +14,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 from uuid import uuid4
 
 import psycopg
+from psycopg import sql
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
@@ -381,7 +382,7 @@ def _tweet_projection(include_raw):
     ]
     if include_raw:
         fields.append('raw')
-    return ', '.join(fields)
+    return sql.SQL(', ').join(sql.Identifier(field) for field in fields)
 
 
 def _row_to_json(row):
@@ -423,23 +424,28 @@ def list_tweets(
         has_quoted=has_quoted,
         has_reply=has_reply,
     )
-    sql = f"""
-        select {_tweet_projection(include_raw)}
+    query_sql = sql.SQL("""
+        select {projection}
         from tweets
-        {where}
-        order by {_tweet_order_by(sort)}
+        {where_clause}
+        order by {order_by}
         limit %s offset %s
-    """
+    """).format(
+        projection=_tweet_projection(include_raw),
+        where_clause=where,
+        order_by=sql.SQL(_tweet_order_by(sort)),
+    )
     query_params = params + [limit, offset]
     with connect() as conn:
-        rows = conn.execute(sql, query_params).fetchall()
+        rows = conn.execute(query_sql, query_params).fetchall()
         tweets = [_row_to_json(row) for row in rows]
         if include_media and tweets:
             _attach_media(conn, tweets)
         if include_total or include_facets or include_metrics:
             result = {'tweets': tweets}
             if include_total:
-                result['total'] = conn.execute(f"select count(*) as total from tweets {where}", params).fetchone()['total']
+                count_sql = sql.SQL("select count(*) as total from tweets {where_clause}").format(where_clause=where)
+                result['total'] = conn.execute(count_sql, params).fetchone()['total']
             if include_facets:
                 result['facets'] = tweet_facets(conn, facet_query)
             if include_metrics:
@@ -478,17 +484,19 @@ def _tweet_filter_where(
         clauses.append('source_endpoint = %s')
         params.append(endpoint)
     if media:
-        _add_media_filter(clauses, media)
+        _add_media_filter(clauses, params, media)
     if transcription:
-        _add_transcription_filter(clauses, transcription)
+        _add_transcription_filter(clauses, params, transcription)
     if has_quoted:
         clauses.append("coalesce(raw->>'quoted_tweet_id', '') <> ''")
     if has_reply:
         clauses.append("coalesce(raw->>'in_reply_to', '') <> ''")
-    return f"where {' and '.join(clauses)}" if clauses else '', params
+    if not clauses:
+        return sql.SQL(''), params
+    return sql.SQL('where ') + sql.SQL(' and ').join(sql.SQL(clause) for clause in clauses), params
 
 
-def _add_media_filter(clauses, media):
+def _add_media_filter(clauses, params, media):
     if media == 'none':
         clauses.append('not exists (select 1 from tweet_media tm where tm.tweet_id = tweets.tweet_id)')
     elif media == 'media':
@@ -497,7 +505,8 @@ def _add_media_filter(clauses, media):
         clauses.append("exists (select 1 from tweet_media tm where tm.tweet_id = tweets.tweet_id and tm.media_type = 'photo')")
     elif media in {'video', 'gif'}:
         media_type = 'animated_gif' if media == 'gif' else 'video'
-        clauses.append(f"exists (select 1 from tweet_media tm where tm.tweet_id = tweets.tweet_id and tm.media_type = '{media_type}')")
+        clauses.append('exists (select 1 from tweet_media tm where tm.tweet_id = tweets.tweet_id and tm.media_type = %s)')
+        params.append(media_type)
     elif media == 'link':
         clauses.append(_tweet_link_clause())
     elif media == 'multiple':
@@ -510,15 +519,12 @@ def _add_media_filter(clauses, media):
         )""")
 
 
-def _add_transcription_filter(clauses, transcription):
+def _add_transcription_filter(clauses, params, transcription):
     if transcription == 'has_text':
         clauses.append("exists (select 1 from tweet_media tm where tm.tweet_id = tweets.tweet_id and coalesce(tm.transcript_text, '') <> '')")
     elif transcription in {'not_requested', 'queued', 'transcribing', 'done', 'skipped', 'error'}:
-        clauses.append(
-            "exists (select 1 from tweet_media tm where tm.tweet_id = tweets.tweet_id and tm.media_type in ('video', 'animated_gif') and tm.transcript_status = "
-            + _sql_literal(transcription)
-            + ")"
-        )
+        clauses.append("exists (select 1 from tweet_media tm where tm.tweet_id = tweets.tweet_id and tm.media_type in ('video', 'animated_gif') and tm.transcript_status = %s)")
+        params.append(transcription)
 
 
 def _tweet_link_clause():
@@ -565,39 +571,37 @@ def _tweet_order_by(sort):
     return newest
 
 
-def _sql_literal(value):
-    return "'" + str(value).replace("'", "''") + "'"
-
-
 def tweet_facets(conn, query=None):
-    author_where = "where author_username is not null and author_username <> ''"
-    endpoint_where = "where source_endpoint is not null and source_endpoint <> ''"
+    author_where = ["author_username is not null and author_username <> ''"]
+    endpoint_where = ["source_endpoint is not null and source_endpoint <> ''"]
     author_params = []
     endpoint_params = []
     if query:
         needle = f"%{query.lstrip('@')}%"
-        author_where += ' and (author_username ilike %s or author_name ilike %s)'
-        endpoint_where += ' and source_endpoint ilike %s'
+        author_where.append('(author_username ilike %s or author_name ilike %s)')
+        endpoint_where.append('source_endpoint ilike %s')
         author_params.extend([needle, needle])
         endpoint_params.append(needle)
+    author_where_sql = sql.SQL('where ') + sql.SQL(' and ').join(sql.SQL(clause) for clause in author_where)
+    endpoint_where_sql = sql.SQL('where ') + sql.SQL(' and ').join(sql.SQL(clause) for clause in endpoint_where)
     author_rows = conn.execute(
-        f"""
+        sql.SQL("""
         select author_username as value, max(author_name) as label, count(*) as count
         from tweets
-        {author_where}
+        {where_clause}
         group by author_username
         order by lower(author_username)
-        """,
+        """).format(where_clause=author_where_sql),
         author_params,
     ).fetchall()
     endpoint_rows = conn.execute(
-        f"""
+        sql.SQL("""
         select source_endpoint as value, source_endpoint as label, count(*) as count
         from tweets
-        {endpoint_where}
+        {where_clause}
         group by source_endpoint
         order by source_endpoint
-        """,
+        """).format(where_clause=endpoint_where_sql),
         endpoint_params,
     ).fetchall()
     return {
@@ -623,7 +627,9 @@ def tweet_list_metrics(conn):
 def get_tweet(tweet_id, include_raw=False, include_media=False):
     with connect() as conn:
         row = conn.execute(
-            f"select {_tweet_projection(include_raw)} from tweets where tweet_id = %s",
+            sql.SQL("select {projection} from tweets where tweet_id = %s").format(
+                projection=_tweet_projection(include_raw),
+            ),
             (tweet_id,),
         ).fetchone()
         if not row:
@@ -659,17 +665,17 @@ def _media_projection(include_bytes=False):
     ]
     if include_bytes:
         fields.append('asset_bytes')
-    return ', '.join(fields)
+    return sql.SQL(', ').join(sql.Identifier(field) for field in fields)
 
 
 def _media_rows(conn, tweet_id):
     return conn.execute(
-        f"""
-        select {_media_projection()}
+        sql.SQL("""
+        select {projection}
         from tweet_media
         where tweet_id = %s
         order by media_index asc, created_at asc
-        """,
+        """).format(projection=_media_projection()),
         (tweet_id,),
     ).fetchall()
 
@@ -677,12 +683,12 @@ def _media_rows(conn, tweet_id):
 def _attach_media(conn, tweets):
     tweet_ids = [tweet['tweet_id'] for tweet in tweets]
     rows = conn.execute(
-        f"""
-        select {_media_projection()}
+        sql.SQL("""
+        select {projection}
         from tweet_media
         where tweet_id = any(%s)
         order by tweet_id, media_index asc, created_at asc
-        """,
+        """).format(projection=_media_projection()),
         (tweet_ids,),
     ).fetchall()
     by_tweet = {tweet_id: [] for tweet_id in tweet_ids}
@@ -703,7 +709,9 @@ def list_media(tweet_id):
 def get_media(media_id, include_bytes=False):
     with connect() as conn:
         row = conn.execute(
-            f"select {_media_projection(include_bytes)} from tweet_media where media_id = %s",
+            sql.SQL("select {projection} from tweet_media where media_id = %s").format(
+                projection=_media_projection(include_bytes),
+            ),
             (media_id,),
         ).fetchone()
     return _row_to_json(row) if row else None

@@ -13,7 +13,7 @@
  *   --out   tests/e2e/.extension-out
  */
 
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { cpSync, mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { resolve, dirname, join } from 'node:path';
@@ -47,9 +47,14 @@ const EXTENSION_FILES = [
 
 /** Extract DER-encoded public key from a PEM private key, return as Buffer. */
 function extractPublicKeyDER(pemPath) {
-  const der = execSync(
-    `openssl rsa -in "${pemPath}" -pubout -outform DER 2>/dev/null`,
-  );
+  const der = execFileSync('openssl', [
+    'rsa',
+    '-in',
+    pemPath,
+    '-pubout',
+    '-outform',
+    'DER',
+  ], { stderr: 'ignore' });
   return der; // Buffer
 }
 
@@ -81,7 +86,7 @@ function main() {
   }
 
   if (!existsSync(PEM_PATH)) {
-    console.error(`Error: PEM key not found at ${PEM_PATH}`);
+    console.error('Error: PEM key not found at %s', PEM_PATH);
     process.exit(1);
   }
 
@@ -102,7 +107,7 @@ function main() {
     const src = join(EXTENSION_ROOT, entry);
     const dst = join(outDir, entry);
     if (!existsSync(src)) {
-      console.warn(`Warning: ${entry} not found, skipping`);
+      console.warn('Warning: %s not found, skipping', entry);
       continue;
     }
     cpSync(src, dst, { recursive: true, force: true });
@@ -114,9 +119,9 @@ function main() {
   manifest.key = publicKeyBase64;
   writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
 
-  console.log(`Extension built to: ${outDir}`);
-  console.log(`Extension ID:       ${extensionId}`);
-  console.log(`Public key injected into manifest.json`);
+  console.log('Extension built to: %s', outDir);
+  console.log('Extension ID:       %s', extensionId);
+  console.log('Public key injected into manifest.json');
 }
 
 main();

@@ -22,7 +22,7 @@
  */
 
 import { chromium } from 'playwright';
-import { fork, execSync } from 'node:child_process';
+import { fork, execFileSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import {
   mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, readdirSync,
@@ -70,14 +70,14 @@ for (let i = 0; i < args.length; i++) {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function log(msg) { console.log(`[golden-jsonl] ${msg}`); }
+function log(msg) { console.log('[golden-jsonl] %s', msg); }
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 
 function buildExtension() {
   log('Building test extension...');
-  execSync(`node ${join(__dirname, 'build-test-extension.js')}`, {
+  execFileSync('node', [join(__dirname, 'build-test-extension.js')], {
     stdio: 'inherit',
   });
   if (!existsSync(join(EXTENSION_DIR, 'manifest.json'))) {
@@ -192,7 +192,9 @@ async function pollForIngest(received, minRecords, timeoutMs = 60_000) {
 function stableStringify(obj) {
   if (obj === null || typeof obj !== 'object') return JSON.stringify(obj);
   if (Array.isArray(obj)) return '[' + obj.map(stableStringify).join(',') + ']';
-  const keys = Object.keys(obj).sort();
+  const keys = Object.keys(obj)
+    .filter(k => Object.hasOwn(obj, k) && !['__proto__', 'constructor', 'prototype'].includes(k))
+    .sort();
   return '{' + keys.map(k => JSON.stringify(k) + ':' + stableStringify(obj[k])).join(',') + '}';
 }
 
@@ -273,7 +275,7 @@ async function run() {
     process.env.XPORT_AUTO_STORE_IMAGES = 'false';
     log('Running native-host bootstrap...');
     bootstrapRan = true;  // set before --setup so teardown runs on partial failure
-    execSync(`node "${BOOTSTRAP}" --setup`, { stdio: 'inherit' });
+    execFileSync('node', [BOOTSTRAP, '--setup'], { stdio: 'inherit' });
 
     // 3. Build extension
     buildExtension();
@@ -401,7 +403,7 @@ async function run() {
     if (bootstrapRan) {
       log('Tearing down native host...');
       try {
-        execSync(`node "${BOOTSTRAP}" --teardown`, { stdio: 'inherit' });
+        execFileSync('node', [BOOTSTRAP, '--teardown'], { stdio: 'inherit' });
       } catch {}
     }
 
@@ -417,6 +419,6 @@ async function run() {
 run()
   .then(ok => process.exit(ok ? 0 : 1))
   .catch(err => {
-    console.error(`\n[golden-jsonl] FATAL: ${err.message}`);
+    console.error('\n[golden-jsonl] FATAL: %s', err.message);
     process.exit(1);
   });

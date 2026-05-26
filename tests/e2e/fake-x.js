@@ -15,7 +15,7 @@
 
 import { createServer } from 'node:https';
 import { readFileSync, mkdirSync, existsSync } from 'node:fs';
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -45,12 +45,23 @@ const KEY_PATH = join(CERT_DIR, 'fake-x.key');
 function ensureCerts() {
   if (existsSync(CERT_PATH) && existsSync(KEY_PATH)) return;
   mkdirSync(CERT_DIR, { recursive: true });
-  execSync(
-    `openssl req -x509 -newkey rsa:2048 ` +
-      `-keyout "${KEY_PATH}" -out "${CERT_PATH}" ` +
-      `-days 3650 -nodes -subj "/CN=x.com" ` +
-      `-addext "subjectAltName=DNS:x.com,DNS:twitter.com,DNS:*.x.com,DNS:*.twitter.com"`,
-  );
+  execFileSync('openssl', [
+    'req',
+    '-x509',
+    '-newkey',
+    'rsa:2048',
+    '-keyout',
+    KEY_PATH,
+    '-out',
+    CERT_PATH,
+    '-days',
+    '3650',
+    '-nodes',
+    '-subj',
+    '/CN=x.com',
+    '-addext',
+    'subjectAltName=DNS:x.com,DNS:twitter.com,DNS:*.x.com,DNS:*.twitter.com',
+  ]);
 }
 
 ensureCerts();
@@ -130,11 +141,16 @@ const server = createServer(
 );
 
 server.listen(port, '127.0.0.1', () => {
-  console.log(`[fake-x] HTTPS server listening on https://127.0.0.1:${port}`);
-  console.log(`[fake-x] Fixture: ${fixtureManifest.scenario} (${fixtureManifest.tweet_count} tweets, endpoint: ${fixtureEndpoint})`);
-  console.log(`[fake-x] Launch Chrome with:`);
-  console.log(`  --host-resolver-rules="MAP x.com 127.0.0.1" --ignore-certificate-errors`);
-  console.log(`  Then navigate to https://x.com:${port}/`);
+  console.log('[fake-x] HTTPS server listening on https://127.0.0.1:%s', port);
+  console.log(
+    '[fake-x] Fixture: %s (%s tweets, endpoint: %s)',
+    fixtureManifest.scenario,
+    fixtureManifest.tweet_count,
+    fixtureEndpoint,
+  );
+  console.log('[fake-x] Launch Chrome with:');
+  console.log('  --host-resolver-rules="MAP x.com 127.0.0.1" --ignore-certificate-errors');
+  console.log('  Then navigate to https://x.com:%s/', port);
 
   // Signal readiness for programmatic consumers
   if (process.send) process.send({ type: 'ready', port });
