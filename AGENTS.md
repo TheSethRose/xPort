@@ -111,10 +111,12 @@ macOS/Linux installs auto-use `native-host/xport_transcribe_parakeet.sh` when `p
 
 ## UI Rules
 
-- Popup answers capture health first, then counts, pause/resume, recent session tweets, media/debug directory feedback, and dashboard links.
-- Dashboard opens tweet-first. Tweets tab pages stored Postgres tweets via `/stored-tweets`, supplemented by related current-session capture events, and renders the table 100 rows per page. Keep tweet search/filter/sort server-side so the browser does not hydrate the full tweet history.
+- Popup answers capture health first, then current-session count plus stored Postgres all-time count, pause/resume, recent session tweets, and dashboard links.
+- Dashboard opens tweet-first. Tweets tab pages stored Postgres tweets via `/stored-tweets`, supplemented by related current-session capture events, and renders the table 100 rows per page. Keep tweet search/filter/sort, including date and metric sorts, server-side so the browser does not hydrate the full tweet history.
+- Tweets table header selection stays page-scoped. Use `Select all N matching` for query-scoped bulk actions across all matching paginated tweets; resolve matching rows lazily only when a bulk action needs the rows.
 - Live Events is current-session only. Debug, transport, parser, and settings are secondary tabs.
 - Stored tweets and capture events keep auto-refresh and auto-scroll controls.
+- Dynamic Tweets filters for authors, sources, and endpoints must use API facets from the full stored dataset, not just the visible page. Typed author/source/endpoint option searches should query facets through the daemon/API instead of hydrating all tweets.
 - Long-list filters, including transcription status, use searchable dropdowns.
 - Open filter dropdowns count as active editing: background refresh may fetch, but must not rebuild visible controls until close.
 - Tweet detail drawer shows video/GIF transcript status, model, timestamp, error, and stored transcript text when media metadata includes it.

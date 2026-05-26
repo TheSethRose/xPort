@@ -250,6 +250,7 @@ class DaemonHandler(BaseHTTPRequestHandler):
                 include_total=bool(body.get('includeTotal') or body.get('include_total')),
                 include_facets=bool(body.get('includeFacets') or body.get('include_facets')),
                 include_metrics=bool(body.get('includeMetrics') or body.get('include_metrics')),
+                facet_query=body.get('facetQuery') or body.get('facet_q'),
             )
             if isinstance(tweets, dict):
                 self._send_json({'ok': True, **tweets})

@@ -188,7 +188,7 @@ Expected response:
 {"ok":true,"version":"0.23.1"}
 ```
 
-Open [x.com](https://x.com) and browse normally. Click the XPort extension icon to see live/paused/offline status, session and all-time tweet counts, recent captured tweets, pause/resume controls, media/debug directory settings, and links into the tweet and debug dashboard tabs.
+Open [x.com](https://x.com) and browse normally. Click the XPort extension icon to see live/paused/offline status, session and all-time tweet counts, recent captured tweets, pause/resume controls, and links into the tweet and debug dashboard tabs.
 
 ### What the installer does
 
@@ -223,7 +223,7 @@ Tweet capture will fail closed until `XPORT_API_URL` and `XPORT_INGEST_TOKEN` ar
 
 | Optional feature | Setup |
 |---|---|
-| Custom media/debug directory | Set it in the popup, or set `XPORT_OUTPUT_DIR` before running the installer |
+| Custom media/debug directory | Set `XPORT_OUTPUT_DIR` before running the installer |
 | Debug logging | Use the debug dashboard toggle, or set `XPORT_LOG_LEVEL=debug` and re-run the installer |
 | Image saving | Automatic for captured `pbs.twimg.com` photos after successful Postgres ingest; set `XPORT_AUTO_STORE_IMAGES=false` before running the installer to disable |
 | Video transcription | Install `parakeet-mlx` plus `ffmpeg`, or configure `XPORT_TRANSCRIBE_COMMAND`, re-run the installer, then use the popup/debug dashboard/CLI transcribe action |
@@ -319,7 +319,7 @@ API endpoints:
 |---|---|---|
 | `GET /health` | None | DB-backed health check |
 | `POST /api/ingest/tweets` | Bearer token | Inserts/upserts tweets, media metadata, and an ingest batch |
-| `GET /api/tweets` | Bearer token | Lists captured tweets with server-side search, filters, sort, paging, and optional metadata via `q`, `author`, `since`, `until`, `endpoint`, `media`, `transcription`, `has_quoted`, `has_reply`, `sort`, `limit`, `offset`, `include_raw`, `include_media`, `include_total`, `include_facets`, and `include_metrics`. `limit` is bounded to 1-500. |
+| `GET /api/tweets` | Bearer token | Lists captured tweets with server-side search, filters, sort, paging, and optional metadata via `q`, `author`, `since`, `until`, `endpoint`, `media`, `transcription`, `has_quoted`, `has_reply`, `sort`, `limit`, `offset`, `include_raw`, `include_media`, `include_total`, `include_facets`, and `include_metrics`. Sort values include `newest`, `oldest`, `captured_newest`, `captured_oldest`, `views`, `likes`, `retweets`, `replies`, `quotes`, `bookmarks`, `engagement`, `author`, `source`, `status`, and `media`. `limit` is bounded to 1-500. |
 | `GET /api/tweets/<tweet_id>` | Bearer token | Returns one captured tweet, optionally with `include_raw=true` and `include_media=true` |
 | `GET /api/tweets/<tweet_id>/media` | Bearer token | Lists media metadata for one tweet |
 | `GET /api/media/<media_id>` | Bearer token | Returns one media metadata row |
@@ -476,7 +476,7 @@ XPort/
 
 After modifying extension files (`extension/background.js`, `extension/lib/`, `extension/content-*.js`, `extension/popup.*`), reload the extension in Chrome (`chrome://extensions`) and hard-reload any open X tabs.
 
-**Popup and dashboard:** The popup is the lightweight control center: capture status, session/all-time counts, recent session tweets, pause/resume, output directory feedback, and direct links to dashboard tabs. The dashboard opens to the tweet-first Tweets tab with stored Postgres tweets loaded one 100-row page at a time, related current-session capture statuses, server-side search/filter/sort, searchable long-list filters including transcription status, removable active filter chips, bulk actions, export actions, and a detail drawer for related events, transcript metadata/text, and raw/parsed JSON. Live Events is focused on the current-session capture stream. Parser, Debug, and Settings tabs keep parser testing, transport health, debug logging, discovery mode, and display preferences out of the main tweet workspace. Stored tweets and capture events have auto-refresh and auto-scroll controls; open filter dropdowns pause only visual refresh updates while data continues fetching in the background. Enable debug logging to write timestamped service worker logs to `debug-YYYY-MM-DD.log`, or discovery mode to log endpoint response shapes to the console.
+**Popup and dashboard:** The popup is the lightweight control center: capture status, current-session count, stored Postgres all-time count, recent session tweets, pause/resume, and direct links to dashboard tabs. The dashboard opens to the tweet-first Tweets tab with stored Postgres tweets loaded one 100-row page at a time, related current-session capture statuses, server-side search/filter/sort including date and metric sort options, searchable long-list filters including transcription status, dataset-level author/source/endpoint options from API facets, typed server-backed author/source/endpoint option search, removable active filter chips, page-scoped header selection, lazy `Select all N matching` bulk selection across paginated results, export actions, and a detail drawer for related events, transcript metadata/text, and raw/parsed JSON. Live Events is focused on the current-session capture stream. Parser, Debug, and Settings tabs keep parser testing, transport health, debug logging, discovery mode, and display preferences out of the main tweet workspace. Stored tweets and capture events have auto-refresh and auto-scroll controls; open filter dropdowns pause only visual refresh updates while data continues fetching in the background. Enable debug logging to write timestamped service worker logs to `debug-YYYY-MM-DD.log`, or discovery mode to log endpoint response shapes to the console.
 
 **Dev mode:** When loaded unpacked (developer mode), the extension prefers `chrome.storage.session` for `seenIds` and `mediaSeenIds` dedup caches, and falls back to `chrome.storage.local` if session storage APIs are unavailable. When session storage is available, reloading the extension automatically clears the cache — no need to manually clear storage between test runs.
 

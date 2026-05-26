@@ -686,6 +686,10 @@ input[type="checkbox"] {
   display: none;
 }
 
+.bulk-bar .small-btn[hidden] {
+  display: none;
+}
+
 .bulk-bar {
   justify-content: flex-start;
 }
@@ -925,6 +929,12 @@ body.density-compact .tweet-metrics {
   border-color: var(--border-strong);
 }
 
+.small-btn:disabled,
+.icon-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 .icon-action-btn {
   position: relative;
   display: inline-flex;
@@ -1015,6 +1025,12 @@ body.density-compact .icon-action-btn {
   text-align: center;
 }
 
+.data-table td.empty-state {
+  padding: 36px 16px;
+  text-align: center;
+  vertical-align: middle;
+}
+
 .empty-icon {
   display: block;
   width: 60px;
@@ -1022,6 +1038,13 @@ body.density-compact .icon-action-btn {
   margin: 0 auto 12px;
   color: var(--accent);
   opacity: 0.82;
+}
+
+.data-table td.empty-state .empty-icon {
+  width: 60px !important;
+  height: 60px !important;
+  max-width: 60px;
+  max-height: 60px;
 }
 
 .empty-state strong {

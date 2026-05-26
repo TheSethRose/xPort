@@ -8,6 +8,7 @@ const FLUSH_INTERVAL_MS = 30_000;
 const MAX_SEEN_IDS = 50_000;
 const HTTP_TIMEOUT_MS = 25_000;
 const MAX_BUFFER_SIZE = 2000;
+const STORED_COUNT_CACHE_MS = 2_000;
 
 let captureEnabled = true;
 let buffer = [];
@@ -22,6 +23,9 @@ let verboseLogging = false;
 let logBuffer = [];
 let lastIngestError = null;
 let parserErrorCount = 0;
+let storedAllTimeCountCache = null;
+let storedAllTimeCountCacheAt = 0;
+let storedAllTimeCountInFlight = null;
 const isDevMode = !chrome.runtime.getManifest().update_url;
 const hasSessionStorage = !!chrome.storage.session;
 const traceStorage = chrome.storage.session || chrome.storage.local;
@@ -358,7 +362,7 @@ async function sendToHost(msg) {
     };
     for (const key of [
       'query', 'author', 'endpoint', 'since', 'until', 'media', 'transcription', 'sort',
-      'hasQuoted', 'hasReply', 'includeTotal', 'includeFacets', 'includeMetrics',
+      'hasQuoted', 'hasReply', 'includeTotal', 'includeFacets', 'includeMetrics', 'facetQuery',
     ]) {
       if (msg[key] !== undefined && msg[key] !== null && msg[key] !== '') body[key] = msg[key];
     }
@@ -376,6 +380,39 @@ async function sendToHost(msg) {
     updateTransportBadge();
     return null;
   }
+}
+
+async function getStoredAllTimeCount() {
+  if (transport === 'none') return storedAllTimeCountCache ?? allTimeCount;
+  const now = Date.now();
+  if (storedAllTimeCountCache !== null && now - storedAllTimeCountCacheAt < STORED_COUNT_CACHE_MS) {
+    return storedAllTimeCountCache;
+  }
+  if (!storedAllTimeCountInFlight) {
+    storedAllTimeCountInFlight = (async () => {
+      const resp = await sendToHost({
+        type: 'GET_STORED_TWEETS',
+        limit: 1,
+        offset: 0,
+        includeTotal: true,
+        includeMetrics: true,
+      });
+      if (!resp?.ok) return storedAllTimeCountCache ?? allTimeCount;
+      const metricsCount = Number(resp.metrics?.tweet_count);
+      const total = Number(resp.total);
+      const count = Number.isFinite(metricsCount)
+        ? metricsCount
+        : Number.isFinite(total)
+          ? total
+          : storedAllTimeCountCache ?? allTimeCount;
+      storedAllTimeCountCache = count;
+      storedAllTimeCountCacheAt = Date.now();
+      return count;
+    })().finally(() => {
+      storedAllTimeCountInFlight = null;
+    });
+  }
+  return storedAllTimeCountInFlight;
 }
 
 // --- Batching & flushing ---
@@ -736,10 +773,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     (async () => {
       await ready;
       await transportReady;
+      const storedAllTimeCount = await getStoredAllTimeCount();
       sendResponse({
         captureEnabled,
         sessionCount,
-        allTimeCount,
+        allTimeCount: storedAllTimeCount,
         connected: transport !== 'none',
         buffered: buffer.length,
         outputDir,
@@ -866,6 +904,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           includeTotal: !!msg.includeTotal,
           includeFacets: !!msg.includeFacets,
           includeMetrics: !!msg.includeMetrics,
+          facetQuery: msg.facetQuery,
         });
         sendResponse(resp || { ok: false, error: 'No transport' });
       } catch (e) {

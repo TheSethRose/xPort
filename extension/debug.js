@@ -26,6 +26,8 @@ const state = {
   hiddenIds: new Set(),
   reviewedIds: new Set(),
   selectedIds: new Set(),
+  selectionMode: 'manual',
+  matchingSelection: null,
   activeTweetId: null,
   drawerReturnFocus: null,
   activeTab: 'tweets',
@@ -103,12 +105,14 @@ const els = {
   selectAllTweets: $('select-all-tweets'),
   bulkBar: $('bulk-bar'),
   bulkCount: $('bulk-count'),
+  bulkSelectMatching: $('bulk-select-matching'),
   bulkExport: $('bulk-export'),
   bulkCopyUrls: $('bulk-copy-urls'),
   bulkCopyText: $('bulk-copy-text'),
   bulkRerun: $('bulk-rerun'),
   bulkRemove: $('bulk-remove'),
   bulkReviewed: $('bulk-reviewed'),
+  bulkClearSelection: $('bulk-clear-selection'),
   dropdownLayer: $('dropdown-layer'),
 
   metricCaptured: $('metric-captured'),
@@ -195,6 +199,10 @@ const STORED_TWEET_PAGE_SIZE = 100;
 const STORED_TWEET_MAX_OFFSET = 100000;
 const TWEET_TABLE_PAGE_SIZE = 100;
 const searchableDropdowns = new Map();
+const METRIC_SORTS = new Set(['likes', 'retweets', 'replies', 'quotes', 'bookmarks', 'views', 'engagement']);
+const REMOTE_FACET_FILTERS = new Set(['author', 'source', 'endpoint']);
+const remoteFacetTimers = new Map();
+let remoteFacetRequestId = 0;
 
 const ICONS = {
   activity: '<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>',
@@ -762,11 +770,10 @@ function renderMetrics(rows = buildTweetRows()) {
 
 function populateTweetFilterOptions(rows) {
   const facets = state.tweetFacets || {};
-  const eventRows = rows.filter(row => row.kind === 'event');
-  replaceOptions(els.statusFilter, 'All statuses', unique(['ACCEPTED', ...eventRows.map(row => row.status)]));
-  replaceOptions(els.sourceFilter, 'All sources', mergeFacetOptions(facets.sources, countedOptions(eventRows, 'source')));
-  replaceOptions(els.endpointFilter, 'All endpoints', mergeFacetOptions(facets.endpoints, countedOptions(eventRows, 'endpoint')));
-  replaceOptions(els.authorFilter, 'All authors', mergeFacetOptions(facets.authors, authorOptions(eventRows), { author: true }));
+  replaceOptions(els.statusFilter, 'All statuses', unique(['ACCEPTED', ...rows.map(row => row.status)]));
+  replaceOptions(els.sourceFilter, 'All sources', mergeFacetOptions(facets.sources, countedOptions(rows, 'source')));
+  replaceOptions(els.endpointFilter, 'All endpoints', mergeFacetOptions(facets.endpoints, countedOptions(rows, 'endpoint')));
+  replaceOptions(els.authorFilter, 'All authors', mergeFacetOptions(facets.authors, authorOptions(rows), { author: true }));
   els.statusFilter.value = optionValueOrAll(els.statusFilter, state.filters.status);
   els.sourceFilter.value = optionValueOrAll(els.sourceFilter, state.filters.source);
   els.endpointFilter.value = optionValueOrAll(els.endpointFilter, state.filters.endpoint);
@@ -976,6 +983,7 @@ function openSearchableDropdown(dropdown) {
       dropdown.search = input.value;
       markUserInteracting(60000);
       renderSearchableOptions(dropdown, { preferSelected: true });
+      scheduleRemoteFacetSearch(dropdown);
     });
     input.addEventListener('keydown', (event) => handleSearchKeydown(event, dropdown));
     const inputWrap = document.createElement('div');
@@ -1122,6 +1130,53 @@ function renderSearchableOptions(dropdown, options = {}) {
 
   updateActiveDescendant(dropdown);
   if (!options.fromScroll) scrollHighlightedOptionIntoView(dropdown);
+}
+
+function scheduleRemoteFacetSearch(dropdown) {
+  const filterKey = dropdown.config.filterKey;
+  if (!REMOTE_FACET_FILTERS.has(filterKey)) return;
+  const query = dropdown.search.trim();
+  clearTimeout(remoteFacetTimers.get(filterKey));
+  if (normalizeDropdownSearch(query, dropdown.config).length < 2) return;
+  remoteFacetTimers.set(filterKey, setTimeout(() => fetchRemoteFacets(dropdown, query), 250));
+}
+
+async function fetchRemoteFacets(dropdown, query) {
+  const requestId = ++remoteFacetRequestId;
+  const resp = await sendMessage({
+    type: 'GET_STORED_TWEETS',
+    limit: 1,
+    offset: 0,
+    includeRaw: false,
+    includeTotal: false,
+    includeFacets: true,
+    includeMetrics: false,
+    facetQuery: query,
+  });
+  if (requestId !== remoteFacetRequestId || !resp?.ok || !resp.facets) return;
+  state.tweetFacets = mergeFacetSets(state.tweetFacets || {}, resp.facets);
+  populateTweetFilterOptions(buildTweetRows());
+  if (!dropdown.menu || dropdown.search.trim() !== query) return;
+  syncDropdownSelect(dropdown.select);
+  renderSearchableOptions(dropdown, { preferSelected: true });
+}
+
+function mergeFacetSets(current = {}, incoming = {}) {
+  return {
+    authors: mergeFacetArray(current.authors, incoming.authors),
+    endpoints: mergeFacetArray(current.endpoints, incoming.endpoints),
+    sources: mergeFacetArray(current.sources, incoming.sources),
+  };
+}
+
+function mergeFacetArray(current = [], incoming = []) {
+  const byValue = new Map();
+  for (const item of [...(current || []), ...(incoming || [])]) {
+    const value = normalizeFilterValue(item?.value ?? item?.label);
+    if (!value) continue;
+    byValue.set(value.toLowerCase(), { ...item, value });
+  }
+  return [...byValue.values()];
 }
 
 function virtualizedOptionWindow(dropdown, options = {}) {
@@ -1349,15 +1404,36 @@ function matchesTimeFilter(row, now, filters = state.filters) {
 
 function sortTweetRows(rows, filters = state.filters) {
   const sorted = [...rows];
-  const byTime = (a, b) => dateValue(b.capturedAt) - dateValue(a.capturedAt);
-  switch (filters.sort) {
-    case 'oldest': return sorted.sort((a, b) => dateValue(a.capturedAt) - dateValue(b.capturedAt));
-    case 'author': return sorted.sort((a, b) => a.authorHandle.localeCompare(b.authorHandle) || byTime(a, b));
-    case 'source': return sorted.sort((a, b) => a.source.localeCompare(b.source) || byTime(a, b));
-    case 'status': return sorted.sort((a, b) => a.status.localeCompare(b.status) || byTime(a, b));
-    case 'media': return sorted.sort((a, b) => summarizeMedia(a).localeCompare(summarizeMedia(b)) || byTime(a, b));
-    default: return sorted.sort(byTime);
+  const byPostedNewest = (a, b) => dateValue(b.createdAt || b.capturedAt) - dateValue(a.createdAt || a.capturedAt)
+    || dateValue(b.capturedAt) - dateValue(a.capturedAt);
+  const byCapturedNewest = (a, b) => dateValue(b.capturedAt) - dateValue(a.capturedAt);
+  if (METRIC_SORTS.has(filters.sort)) {
+    return sorted.sort((a, b) => metricSortValue(b, filters.sort) - metricSortValue(a, filters.sort) || byPostedNewest(a, b));
   }
+  switch (filters.sort) {
+    case 'oldest': return sorted.sort((a, b) => dateValue(a.createdAt || a.capturedAt) - dateValue(b.createdAt || b.capturedAt)
+      || dateValue(a.capturedAt) - dateValue(b.capturedAt));
+    case 'captured_newest': return sorted.sort(byCapturedNewest);
+    case 'captured_oldest': return sorted.sort((a, b) => dateValue(a.capturedAt) - dateValue(b.capturedAt));
+    case 'author': return sorted.sort((a, b) => a.authorHandle.localeCompare(b.authorHandle) || byPostedNewest(a, b));
+    case 'source': return sorted.sort((a, b) => a.source.localeCompare(b.source) || byPostedNewest(a, b));
+    case 'status': return sorted.sort((a, b) => a.status.localeCompare(b.status) || byPostedNewest(a, b));
+    case 'media': return sorted.sort((a, b) => mediaSortValue(b) - mediaSortValue(a) || byPostedNewest(a, b));
+    default: return sorted.sort(byPostedNewest);
+  }
+}
+
+function metricSortValue(row, sort) {
+  if (sort === 'engagement') {
+    return ['likes', 'retweets', 'replies', 'quotes', 'bookmarks']
+      .reduce((total, key) => total + (Number(row.metrics?.[key]) || 0), 0);
+  }
+  const value = Number(row.metrics?.[sort]);
+  return Number.isFinite(value) ? value : -1;
+}
+
+function mediaSortValue(row) {
+  return mediaItems(row).length + (hasLink(row) ? 1 : 0);
 }
 
 function currentTweetPage(rows) {
@@ -1394,9 +1470,13 @@ function setTweetPage(page) {
 
 function renderTweetTable(rows, options = {}) {
   if (rows.length === 0) {
-    renderTweetMessage(state.storedTweets.length === 0 && state.events.length === 0
-      ? 'No tweets captured yet.'
-      : 'No tweets match the active filters.');
+    const filtered = hasRestrictiveTweetFilters();
+    renderTweetMessage(
+      filtered ? 'No tweets match the active filters.' : 'No tweets captured yet.',
+      filtered
+        ? 'Adjust the search or clear filters to see stored tweets.'
+        : 'Captured tweets will appear here when XPort detects activity.',
+    );
     return;
   }
 
@@ -1434,11 +1514,11 @@ function createTweetRow(row, filteredRows, pageRows, signature) {
   selectTd.className = 'select-col';
   const checkbox = document.createElement('input');
   checkbox.type = 'checkbox';
-  checkbox.checked = state.selectedIds.has(row.rowId);
+  checkbox.checked = isRowSelected(row);
   checkbox.setAttribute('aria-label', `Select ${row.text || row.id}`);
   checkbox.addEventListener('click', (event) => event.stopPropagation());
   checkbox.addEventListener('change', () => {
-    toggleSelection(row.rowId, checkbox.checked);
+    toggleSelection(row, checkbox.checked);
     renderBulkBar(filteredRows, pageRows);
   });
   selectTd.appendChild(checkbox);
@@ -1467,7 +1547,7 @@ function tweetRowSignature(row) {
     status: row.status,
     media: summarizeMedia(row),
     metrics: row.metrics,
-    selected: state.selectedIds.has(row.rowId),
+    selected: isRowSelected(row),
     active: row.id === state.activeTweetId || row.rowId === state.activeTweetId,
     reviewed: state.reviewedIds.has(row.rowId),
     search: state.filters.search,
@@ -1475,7 +1555,7 @@ function tweetRowSignature(row) {
   });
 }
 
-function renderTweetMessage(message) {
+function renderTweetMessage(message, hint = '') {
   els.tweetsBody.innerHTML = '';
   const tr = document.createElement('tr');
   const td = document.createElement('td');
@@ -1484,11 +1564,30 @@ function renderTweetMessage(message) {
   const emptyAction = message === 'No tweets captured yet.'
     ? `<div class="empty-actions"><button id="empty-check" class="small-btn">${iconLabelHtml('server', 'Check connection')}</button><a class="small-btn action-link" href="https://x.com" target="_blank" rel="noreferrer">${iconLabelHtml('external-link', 'Open X')}</a><button id="empty-events" class="small-btn">${iconLabelHtml('activity', 'View Live Events')}</button></div>`
     : '';
-  td.innerHTML = `${iconHtml('message', 'empty-icon')}<strong>${escapeHtml(message)}</strong><span class="empty-hint">Captured tweets will appear here when XPort detects activity.</span>${emptyAction}`;
+  td.innerHTML = `${iconHtml('message', 'empty-icon')}<strong>${escapeHtml(message)}</strong>${hint ? `<span class="empty-hint">${escapeHtml(hint)}</span>` : ''}${emptyAction}`;
   tr.appendChild(td);
   els.tweetsBody.appendChild(tr);
   $('empty-check')?.addEventListener('click', refreshHealth);
   $('empty-events')?.addEventListener('click', () => switchTab('events'));
+}
+
+function hasRestrictiveTweetFilters(filters = state.filters) {
+  const defaults = defaultTweetFilters();
+  return Boolean(
+    filters.search.trim()
+      || filters.status !== defaults.status
+      || filters.source !== defaults.source
+      || filters.endpoint !== defaults.endpoint
+      || filters.media !== defaults.media
+      || filters.transcription !== defaults.transcription
+      || filters.author !== defaults.author
+      || filters.time !== defaults.time
+      || filters.hasQuoted
+      || filters.hasReply
+      || filters.duplicateOnly
+      || filters.parserErrorOnly
+      || filters.newOnly,
+  );
 }
 
 function tweetCell(row) {
@@ -2106,16 +2205,97 @@ function selectedOptionLabel(select, value) {
   return [...select.options].find(option => option.value === value)?.textContent || value;
 }
 
-function renderBulkBar(visibleRows = filterTweetRows(buildTweetRows()), pageRows = visibleRows) {
-  const visibleIds = new Set(visibleRows.map(row => row.rowId));
-  for (const id of [...state.selectedIds]) {
-    if (!visibleIds.has(id)) state.selectedIds.delete(id);
+function selectableFilterSnapshot(filters = state.filters) {
+  return {
+    search: filters.search.trim(),
+    status: filters.status,
+    source: filters.source,
+    endpoint: filters.endpoint,
+    media: filters.media,
+    transcription: filters.transcription,
+    author: filters.author,
+    time: filters.time,
+    hasQuoted: !!filters.hasQuoted,
+    hasReply: !!filters.hasReply,
+    duplicateOnly: !!filters.duplicateOnly,
+    parserErrorOnly: !!filters.parserErrorOnly,
+    newOnly: !!filters.newOnly,
+  };
+}
+
+function selectionFilterKey(filters = state.filters) {
+  return JSON.stringify(selectableFilterSnapshot(filters));
+}
+
+function matchingEventRows(filters = state.filters) {
+  return filterTweetRows(state.events.map(eventToTweetRow), filters)
+    .filter(row => !state.hiddenIds.has(row.rowId));
+}
+
+function matchingSelectionTotal() {
+  return state.tweetTotal + matchingEventRows().length;
+}
+
+function isMatchingSelectionCurrent() {
+  return state.selectionMode === 'matching'
+    && state.matchingSelection?.filtersKey === selectionFilterKey();
+}
+
+function selectedCount(total = matchingSelectionTotal()) {
+  if (isMatchingSelectionCurrent()) {
+    return Math.max(0, total - state.matchingSelection.excludedIds.size);
   }
-  const count = state.selectedIds.size;
-  const pageSelected = pageRows.filter(row => state.selectedIds.has(row.rowId)).length;
+  return state.selectedIds.size;
+}
+
+function isRowSelected(row) {
+  if (isMatchingSelectionCurrent()) {
+    return !state.matchingSelection.excludedIds.has(row.rowId);
+  }
+  return state.selectedIds.has(row.rowId);
+}
+
+function clearSelection() {
+  state.selectedIds.clear();
+  state.selectionMode = 'manual';
+  state.matchingSelection = null;
+}
+
+function selectAllMatching(total = matchingSelectionTotal()) {
+  state.selectedIds.clear();
+  state.selectionMode = 'matching';
+  state.matchingSelection = {
+    filtersKey: selectionFilterKey(),
+    total,
+    excludedIds: new Set(),
+  };
+}
+
+function renderBulkBar(visibleRows = filterTweetRows(buildTweetRows()), pageRows = visibleRows) {
+  if (state.selectionMode === 'matching' && !isMatchingSelectionCurrent()) {
+    clearSelection();
+  }
+  if (state.selectionMode === 'manual') {
+    const visibleIds = new Set(visibleRows.map(row => row.rowId));
+    for (const id of [...state.selectedIds]) {
+      if (!visibleIds.has(id)) state.selectedIds.delete(id);
+    }
+  }
+  const total = matchingSelectionTotal();
+  if (isMatchingSelectionCurrent()) state.matchingSelection.total = total;
+  const count = selectedCount(total);
+  const pageSelected = pageRows.filter(isRowSelected).length;
+  const pageFullySelected = pageRows.length > 0 && pageSelected === pageRows.length;
+  const canSelectMatching = state.selectionMode === 'manual' && pageFullySelected && total > count;
   els.bulkBar.hidden = count === 0;
-  els.bulkCount.textContent = `${count} selected`;
-  els.selectAllTweets.checked = pageRows.length > 0 && pageSelected === pageRows.length;
+  els.bulkCount.textContent = isMatchingSelectionCurrent()
+    ? `${count.toLocaleString()} matching selected`
+    : `${count.toLocaleString()} selected`;
+  els.bulkSelectMatching.hidden = !canSelectMatching;
+  els.bulkSelectMatching.textContent = `Select all ${total.toLocaleString()} matching`;
+  els.bulkClearSelection.hidden = count === 0;
+  els.bulkRerun.disabled = !singleConcreteSelectedRow();
+  els.selectAllTweets.checked = pageFullySelected;
   els.selectAllTweets.indeterminate = pageSelected > 0 && pageSelected < pageRows.length;
 }
 
@@ -2124,19 +2304,36 @@ function updateHeaderLastTweet(rows) {
   setIconText(els.headerLastTweet, `Last tweet: ${sorted[0] ? formatRelative(sorted[0].capturedAt) : '—'}`);
 }
 
-function toggleSelection(rowId, checked) {
-  if (checked) state.selectedIds.add(rowId);
-  else state.selectedIds.delete(rowId);
+function toggleSelection(row, checked) {
+  if (isMatchingSelectionCurrent()) {
+    if (checked) state.matchingSelection.excludedIds.delete(row.rowId);
+    else state.matchingSelection.excludedIds.add(row.rowId);
+    return;
+  }
+  if (checked) state.selectedIds.add(row.rowId);
+  else state.selectedIds.delete(row.rowId);
 }
 
 function selectedRows() {
   const rows = buildTweetRows();
-  return rows.filter(row => state.selectedIds.has(row.rowId));
+  return rows.filter(isRowSelected);
+}
+
+function singleConcreteSelectedRow() {
+  if (isMatchingSelectionCurrent()) return null;
+  const rows = selectedRows();
+  return rows.length === 1 ? rows[0] : null;
+}
+
+async function selectedRowsForBulk(progressLabel = 'Loading') {
+  if (!isMatchingSelectionCurrent()) return selectedRows();
+  const rows = await fetchStoredRowsForExport(state.filters, { progressLabel });
+  return rows.filter(row => !state.hiddenIds.has(row.rowId) && isRowSelected(row));
 }
 
 function removeRows(rowIds) {
   for (const rowId of rowIds) state.hiddenIds.add(rowId);
-  state.selectedIds.clear();
+  clearSelection();
   closeTweetDrawer();
   renderAllTweets();
   showToast('Removed from dashboard view');
@@ -2285,10 +2482,11 @@ function exportCsv(rows, filename) {
   download(lines.join('\n'), filename, 'text/csv');
 }
 
-async function fetchStoredRowsForExport(filters = state.filters) {
+async function fetchStoredRowsForExport(filters = state.filters, options = {}) {
   const rows = [];
   let offset = 0;
   let total = null;
+  const progressLabel = options.progressLabel || 'Exporting';
   do {
     const query = storedTweetQuery({
       filters,
@@ -2305,10 +2503,17 @@ async function fetchStoredRowsForExport(filters = state.filters) {
     total = Number.isFinite(Number(resp.total)) ? Number(resp.total) : rows.length;
     offset += page.length;
     if (page.length === 0) break;
-    updateRefreshState(`Exporting ${rows.length.toLocaleString()} tweets...`);
+    updateRefreshState(`${progressLabel} ${rows.length.toLocaleString()} tweets...`);
   } while (rows.length < total && offset <= STORED_TWEET_MAX_OFFSET);
-  const eventRows = filterTweetRows(state.events.map(eventToTweetRow), filters);
-  return [...rows, ...eventRows];
+  const merged = new Map();
+  for (const row of rows.filter(row => !state.hiddenIds.has(row.rowId))) {
+    merged.set(row.id ? `tweet:${row.id}` : row.rowId, row);
+  }
+  for (const row of matchingEventRows(filters)) {
+    const key = row.id ? `tweet:${row.id}` : row.rowId;
+    if (!merged.has(key)) merged.set(key, row);
+  }
+  return [...merged.values()];
 }
 
 async function exportVisibleTweets() {
@@ -2435,17 +2640,68 @@ function bindEvents() {
   els.selectAllTweets.addEventListener('change', () => {
     const filteredRows = filterTweetRows(buildTweetRows());
     const page = currentTweetPage(filteredRows);
-    for (const row of page.rows) toggleSelection(row.rowId, els.selectAllTweets.checked);
+    for (const row of page.rows) toggleSelection(row, els.selectAllTweets.checked);
     renderAllTweets();
   });
   els.tweetPrevPage.addEventListener('click', () => setTweetPage(state.tweetPage - 1));
   els.tweetNextPage.addEventListener('click', () => setTweetPage(state.tweetPage + 1));
-  els.bulkExport.addEventListener('click', () => exportJson(selectedRows().map(exportTweet), 'xport-selected-tweets.json'));
-  els.bulkCopyUrls.addEventListener('click', () => copyText(selectedRows().map(row => row.url).filter(Boolean).join('\n'), 'Selected URLs copied'));
-  els.bulkCopyText.addEventListener('click', () => copyText(selectedRows().map(row => row.text).filter(Boolean).join('\n\n'), 'Selected text copied'));
-  els.bulkRerun.addEventListener('click', () => selectedRows()[0] && loadRowIntoParser(selectedRows()[0]));
-  els.bulkRemove.addEventListener('click', () => removeRows([...state.selectedIds]));
-  els.bulkReviewed.addEventListener('click', () => markRowsReviewed(selectedRows()));
+  els.bulkSelectMatching.addEventListener('click', () => {
+    selectAllMatching();
+    renderAllTweets();
+  });
+  els.bulkClearSelection.addEventListener('click', () => {
+    clearSelection();
+    renderAllTweets();
+  });
+  els.bulkExport.addEventListener('click', async () => {
+    try {
+      const rows = await selectedRowsForBulk('Exporting selected');
+      exportJson(rows.map(exportTweet), 'xport-selected-tweets.json');
+    } catch (e) {
+      showToast(e.message || 'Export failed', 'error');
+    }
+  });
+  els.bulkCopyUrls.addEventListener('click', async () => {
+    try {
+      const rows = await selectedRowsForBulk('Copying selected');
+      copyText(rows.map(row => row.url).filter(Boolean).join('\n'), 'Selected URLs copied');
+    } catch (e) {
+      showToast(e.message || 'Copy failed', 'error');
+    }
+  });
+  els.bulkCopyText.addEventListener('click', async () => {
+    try {
+      const rows = await selectedRowsForBulk('Copying selected');
+      copyText(rows.map(row => row.text).filter(Boolean).join('\n\n'), 'Selected text copied');
+    } catch (e) {
+      showToast(e.message || 'Copy failed', 'error');
+    }
+  });
+  els.bulkRerun.addEventListener('click', () => {
+    const row = singleConcreteSelectedRow();
+    if (row) loadRowIntoParser(row);
+  });
+  els.bulkRemove.addEventListener('click', async () => {
+    try {
+      const rows = await selectedRowsForBulk('Resolving selected');
+      removeRows(rows.map(row => row.rowId));
+    } catch (e) {
+      showToast(e.message || 'Remove failed', 'error');
+    }
+  });
+  els.bulkReviewed.addEventListener('click', async () => {
+    try {
+      const wasMatching = isMatchingSelectionCurrent();
+      const rows = await selectedRowsForBulk('Resolving selected');
+      markRowsReviewed(rows);
+      if (wasMatching) {
+        clearSelection();
+        renderAllTweets();
+      }
+    } catch (e) {
+      showToast(e.message || 'Review failed', 'error');
+    }
+  });
 
   els.eventSearch.addEventListener('input', () => updateEventFilter('search', els.eventSearch.value));
   els.eventStatusFilter.addEventListener('change', () => updateEventFilter('status', els.eventStatusFilter.value));
@@ -2470,7 +2726,10 @@ function bindEvents() {
     const event = [...state.events].reverse().find(item => item.status === 'PARSER_ERROR');
     if (event) loadEventIntoParser(event);
   });
-  els.loadSelected.addEventListener('click', () => selectedRows()[0] && loadRowIntoParser(selectedRows()[0]));
+  els.loadSelected.addEventListener('click', () => {
+    const row = singleConcreteSelectedRow();
+    if (row) loadRowIntoParser(row);
+  });
 
   els.debugToggle.addEventListener('change', () => setDebug(els.debugToggle.checked));
   els.verboseToggle.addEventListener('change', () => setVerbose(els.verboseToggle.checked));
@@ -2510,7 +2769,7 @@ function bindEvents() {
   els.resetSessionView.addEventListener('click', () => {
     state.hiddenIds.clear();
     state.reviewedIds.clear();
-    state.selectedIds.clear();
+    clearSelection();
     renderAllTweets();
     showToast('Session view reset');
   });
@@ -2548,6 +2807,7 @@ function bindEvents() {
 }
 
 function updateFilter(key, value) {
+  if (key !== 'sort') clearSelection();
   state.filters[key] = value;
   state.tweetPage = 1;
   closeRowActionMenu();
@@ -2579,6 +2839,7 @@ function resetFilter(key) {
     newOnly: false,
   };
   if (!(key in defaults)) return;
+  if (key !== 'sort') clearSelection();
   state.filters[key] = defaults[key];
   state.tweetPage = 1;
   syncFilterInputs();
@@ -2586,6 +2847,7 @@ function resetFilter(key) {
 }
 
 function clearFilters() {
+  clearSelection();
   Object.assign(state.filters, {
     search: '',
     status: 'all',

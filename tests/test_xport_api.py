@@ -44,6 +44,15 @@ def test_normalize_tweet_skips_invalid_tweet(api_module):
     assert api_module.normalize_tweet('nope') is None
 
 
+def test_tweet_order_by_supports_dashboard_dataset_sorts(api_module):
+    assert api_module._tweet_order_by('captured_newest') == 'captured_at desc, coalesce(created_at, captured_at) desc'
+    assert api_module._tweet_order_by('captured_oldest') == 'captured_at asc, coalesce(created_at, captured_at) asc'
+    assert api_module._tweet_order_by('views') == 'view_count desc nulls last, coalesce(created_at, captured_at) desc, captured_at desc'
+    assert api_module._tweet_order_by('likes') == 'like_count desc nulls last, coalesce(created_at, captured_at) desc, captured_at desc'
+    assert api_module._tweet_order_by('engagement').startswith('(coalesce(like_count, 0) + coalesce(repost_count, 0)')
+    assert api_module._tweet_order_by('unknown') == 'coalesce(created_at, captured_at) desc, captured_at desc'
+
+
 def test_normalize_media_maps_top_level_and_article_media(api_module):
     rows = api_module.normalize_media({
         'id': '123',
@@ -173,7 +182,62 @@ def test_list_tweets_accepts_filters(api_module, monkeypatch, api_url):
         'include_total': True,
         'include_facets': False,
         'include_metrics': False,
+        'facet_query': None,
     }]
+
+
+def test_list_tweets_returns_facets_and_metrics(api_module, monkeypatch, api_url):
+    base_url, _ = api_url
+    captured = []
+
+    def fake_list_tweets(**kwargs):
+        captured.append(kwargs)
+        return {
+            'tweets': [],
+            'total': 2,
+            'facets': {
+                'authors': [{'value': 'seth', 'label': 'Seth', 'count': 2}],
+                'endpoints': [{'value': 'HomeTimeline', 'label': 'HomeTimeline', 'count': 2}],
+                'sources': [{'value': 'HomeTimeline', 'label': 'HomeTimeline', 'count': 2}],
+            },
+            'metrics': {'tweet_count': 2, 'media_count': 1, 'author_count': 1},
+        }
+
+    monkeypatch.setattr(api_module, 'list_tweets', fake_list_tweets)
+    status, body = _get(
+        base_url,
+        '/api/tweets?include_total=true&include_facets=true&include_metrics=true',
+        token='test-ingest-token',
+    )
+
+    assert status == 200
+    assert body['ok'] is True
+    assert body['total'] == 2
+    assert body['facets']['authors'][0]['value'] == 'seth'
+    assert body['metrics']['media_count'] == 1
+    assert captured[0]['include_facets'] is True
+    assert captured[0]['include_metrics'] is True
+    assert captured[0]['facet_query'] is None
+
+
+def test_list_tweets_passes_facet_query(api_module, monkeypatch, api_url):
+    base_url, _ = api_url
+    captured = []
+
+    def fake_list_tweets(**kwargs):
+        captured.append(kwargs)
+        return {'tweets': [], 'facets': {'authors': [{'value': 'sethrose', 'count': 5}]}}
+
+    monkeypatch.setattr(api_module, 'list_tweets', fake_list_tweets)
+    status, body = _get(
+        base_url,
+        '/api/tweets?include_facets=true&facet_q=%40sethrose',
+        token='test-ingest-token',
+    )
+
+    assert status == 200
+    assert body['facets']['authors'][0]['value'] == 'sethrose'
+    assert captured[0]['facet_query'] == '@sethrose'
 
 
 def test_get_tweet_returns_404_for_missing_row(api_module, monkeypatch, api_url):

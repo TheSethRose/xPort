@@ -19,10 +19,6 @@
         </span>
       </div>
     </header>
-    <div id="status" class="status" role="status">
-      <span id="status-banner-icon" aria-hidden="true"></span>
-      <span id="status-text"></span>
-    </div>
     <div id="transport-error" class="transport-error" style="display: none;"></div>
     <div id="system-state" class="system-state" aria-label="System state"></div>
     <div class="stats" aria-label="Tweet capture counts">
@@ -58,24 +54,6 @@
         <span id="video-label"></span>
       </div>
       <button id="transcribe-btn" class="download-btn" type="button">Transcribe Video</button>
-    </div>
-    <div class="settings">
-      <label class="settings-label" for="output-dir">
-        <span data-icon="folder" aria-hidden="true"></span>
-        <span>Media & debug save directory</span>
-      </label>
-      <p class="settings-help">Used for media downloads, debug logs, and exports.</p>
-      <div class="settings-row">
-        <div class="input-shell">
-          <span data-icon="folder" aria-hidden="true"></span>
-          <input type="text" id="output-dir" placeholder="~/Downloads/xport" spellcheck="false">
-        </div>
-        <button id="save-dir" class="save-btn" type="button">
-          <span data-icon="save" aria-hidden="true"></span>
-          <span>Save</span>
-        </button>
-      </div>
-      <div id="dir-feedback" class="dir-feedback" aria-live="polite"></div>
     </div>
     <div class="nav-actions" aria-label="Dashboard links">
       <button id="open-tweets" class="dashboard-btn primary" type="button" aria-label="Open Tweet Dashboard">

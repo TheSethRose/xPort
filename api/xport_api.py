@@ -410,6 +410,7 @@ def list_tweets(
     include_total=False,
     include_facets=False,
     include_metrics=False,
+    facet_query=None,
 ):
     where, params = _tweet_filter_where(
         query=query,
@@ -440,7 +441,7 @@ def list_tweets(
             if include_total:
                 result['total'] = conn.execute(f"select count(*) as total from tweets {where}", params).fetchone()['total']
             if include_facets:
-                result['facets'] = tweet_facets(conn)
+                result['facets'] = tweet_facets(conn, facet_query)
             if include_metrics:
                 result['metrics'] = tweet_list_metrics(conn)
             return result
@@ -531,41 +532,73 @@ def _tweet_link_clause():
 
 
 def _tweet_order_by(sort):
+    newest = 'coalesce(created_at, captured_at) desc, captured_at desc'
     if sort == 'oldest':
         return 'coalesce(created_at, captured_at) asc, captured_at asc'
+    if sort == 'captured_newest':
+        return 'captured_at desc, coalesce(created_at, captured_at) desc'
+    if sort == 'captured_oldest':
+        return 'captured_at asc, coalesce(created_at, captured_at) asc'
     if sort == 'author':
         return "lower(coalesce(author_username, '')) asc, coalesce(created_at, captured_at) desc, captured_at desc"
     if sort in {'source', 'status'}:
         return "coalesce(source_endpoint, '') asc, coalesce(created_at, captured_at) desc, captured_at desc"
     if sort == 'media':
-        return "(exists (select 1 from tweet_media tm where tm.tweet_id = tweets.tweet_id)) desc, coalesce(created_at, captured_at) desc, captured_at desc"
-    return 'coalesce(created_at, captured_at) desc, captured_at desc'
+        media_count = '(select count(*) from tweet_media tm where tm.tweet_id = tweets.tweet_id)'
+        return f'({media_count} + case when {_tweet_link_clause()} then 1 else 0 end) desc, {newest}'
+    metric_sorts = {
+        'replies': 'reply_count',
+        'retweets': 'repost_count',
+        'likes': 'like_count',
+        'quotes': 'quote_count',
+        'bookmarks': 'bookmark_count',
+        'views': 'view_count',
+    }
+    if sort in metric_sorts:
+        return f'{metric_sorts[sort]} desc nulls last, {newest}'
+    if sort == 'engagement':
+        engagement = (
+            'coalesce(like_count, 0) + coalesce(repost_count, 0) + '
+            'coalesce(reply_count, 0) + coalesce(quote_count, 0) + coalesce(bookmark_count, 0)'
+        )
+        return f'({engagement}) desc, {newest}'
+    return newest
 
 
 def _sql_literal(value):
     return "'" + str(value).replace("'", "''") + "'"
 
 
-def tweet_facets(conn):
+def tweet_facets(conn, query=None):
+    author_where = "where author_username is not null and author_username <> ''"
+    endpoint_where = "where source_endpoint is not null and source_endpoint <> ''"
+    author_params = []
+    endpoint_params = []
+    if query:
+        needle = f"%{query.lstrip('@')}%"
+        author_where += ' and (author_username ilike %s or author_name ilike %s)'
+        endpoint_where += ' and source_endpoint ilike %s'
+        author_params.extend([needle, needle])
+        endpoint_params.append(needle)
     author_rows = conn.execute(
-        """
+        f"""
         select author_username as value, max(author_name) as label, count(*) as count
         from tweets
-        where author_username is not null and author_username <> ''
+        {author_where}
         group by author_username
         order by lower(author_username)
-        limit 1000
-        """
+        """,
+        author_params,
     ).fetchall()
     endpoint_rows = conn.execute(
-        """
+        f"""
         select source_endpoint as value, source_endpoint as label, count(*) as count
         from tweets
-        where source_endpoint is not null and source_endpoint <> ''
+        {endpoint_where}
         group by source_endpoint
         order by source_endpoint
-        limit 1000
-        """
+        """,
+        endpoint_params,
     ).fetchall()
     return {
         'authors': [_row_to_json(row) for row in author_rows],
@@ -841,11 +874,13 @@ class ApiHandler(BaseHTTPRequestHandler):
                 include_total=_bool_param(value('include_total')),
                 include_facets=_bool_param(value('include_facets')),
                 include_metrics=_bool_param(value('include_metrics')),
+                facet_query=value('facet_q'),
             )
             if isinstance(tweets, dict):
                 payload = {'ok': True, 'tweets': tweets.get('tweets') or []}
-                if 'total' in tweets:
-                    payload['total'] = tweets['total']
+                for key in ['total', 'facets', 'metrics']:
+                    if key in tweets:
+                        payload[key] = tweets[key]
             else:
                 payload = {'ok': True, 'tweets': tweets}
             _json_response(self, 200, payload)

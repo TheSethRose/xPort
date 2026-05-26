@@ -1,9 +1,6 @@
-const statusEl = document.getElementById('status');
 const statusPill = document.getElementById('status-pill');
 const statusIcon = document.getElementById('status-icon');
 const statusLabel = document.getElementById('status-label');
-const statusBannerIcon = document.getElementById('status-banner-icon');
-const statusText = document.getElementById('status-text');
 const transportErrorEl = document.getElementById('transport-error');
 const systemStateEl = document.getElementById('system-state');
 const sessionEl = document.getElementById('session-count');
@@ -13,9 +10,6 @@ const errorEl = document.getElementById('error-count');
 const sessionCard = document.getElementById('session-card');
 const alltimeCard = document.getElementById('alltime-card');
 const toggleBtn = document.getElementById('toggle');
-const outputDirInput = document.getElementById('output-dir');
-const saveDirBtn = document.getElementById('save-dir');
-const dirFeedback = document.getElementById('dir-feedback');
 const recentTweetsEl = document.getElementById('recent-tweets');
 const viewAllTweetsBtn = document.getElementById('view-all-tweets');
 const openTweetsBtn = document.getElementById('open-tweets');
@@ -29,7 +23,6 @@ let currentTransport = null;
 let videoChecked = false;
 let currentVideo = null;
 let latestState = null;
-let lastSavedOutputDir = '';
 
 const ICONS = {
   activity: '<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>',
@@ -104,11 +97,6 @@ function render(state) {
   renderPrimaryAction(state);
   renderRecentTweets(state);
 
-  if (state.outputDir !== undefined && document.activeElement !== outputDirInput) {
-    outputDirInput.value = state.outputDir || '';
-    lastSavedOutputDir = state.outputDir || '';
-  }
-
   currentTransport = state.transport;
 }
 
@@ -119,10 +107,6 @@ function renderStatus(state) {
   statusPill.className = `status-pill ${derived.kind}`;
   statusPill.setAttribute('aria-label', derived.ariaLabel);
   statusPill.title = derived.ariaLabel;
-  setIcon(statusBannerIcon, derived.bannerIcon, 'icon status-banner-icon');
-  statusText.textContent = derived.banner;
-  statusEl.className = `status ${derived.tone}`;
-  statusEl.setAttribute('aria-label', derived.banner);
 
   const errorText = state.ingestError || state.transportError || '';
   if (derived.showError && errorText) {
@@ -135,21 +119,21 @@ function renderStatus(state) {
 
 function deriveStatus(state) {
   if (state.ingestError) {
-    return { kind: 'error', tone: 'error', label: 'Error', headerIcon: 'triangle-alert', bannerIcon: 'triangle-alert', banner: 'Unable to save tweets', ariaLabel: 'Capture has an error', showError: true };
+    return { kind: 'error', label: 'Error', headerIcon: 'triangle-alert', ariaLabel: 'Capture has an error', showError: true };
   }
   if (!state.connected) {
-    return { kind: 'offline', tone: 'offline', label: 'Offline', headerIcon: 'wifi-off', bannerIcon: 'wifi-off', banner: 'Extension not connected', ariaLabel: 'Extension is not connected', showError: true };
+    return { kind: 'offline', label: 'Offline', headerIcon: 'wifi-off', ariaLabel: 'Extension is not connected', showError: true };
   }
   if (!state.captureEnabled) {
-    return { kind: 'paused', tone: 'paused', label: 'Paused', headerIcon: 'pause-circle', bannerIcon: 'pause-circle', banner: 'Capture paused', ariaLabel: 'Capture is paused', showError: false };
+    return { kind: 'paused', label: 'Paused', headerIcon: 'pause-circle', ariaLabel: 'Capture is paused', showError: false };
   }
   if (state.verboseLogging) {
-    return { kind: 'discovery', tone: 'discovery', label: 'Live', headerIcon: 'activity', bannerIcon: 'search', banner: 'Discovery mode active', ariaLabel: 'Capture is live in discovery mode', showError: false };
+    return { kind: 'discovery', label: 'Live', headerIcon: 'activity', ariaLabel: 'Capture is live in discovery mode', showError: false };
   }
   if (state.sessionCount === 0) {
-    return { kind: 'live', tone: 'warning', label: 'Live', headerIcon: 'activity', bannerIcon: 'message-x', banner: 'Connected, no tweets this session', ariaLabel: 'Capture is live', showError: false };
+    return { kind: 'live', label: 'Live', headerIcon: 'activity', ariaLabel: 'Capture is live', showError: false };
   }
-  return { kind: 'live', tone: 'success', label: 'Live', headerIcon: 'activity', bannerIcon: 'database', banner: 'Saving tweets to Postgres', ariaLabel: 'Capture is live', showError: false };
+  return { kind: 'live', label: 'Live', headerIcon: 'activity', ariaLabel: 'Capture is live', showError: false };
 }
 
 function renderSystemState(state) {
@@ -300,59 +284,6 @@ toggleBtn.addEventListener('click', () => {
     if (response) refresh();
   });
 });
-
-saveDirBtn.addEventListener('click', () => {
-  const dir = outputDirInput.value.trim();
-  setIconText(saveDirBtn, 'clock', 'Saving');
-  saveDirBtn.disabled = true;
-  setDirectoryFeedback('', '');
-  chrome.runtime.sendMessage({ type: 'SET_OUTPUT_DIR', outputDir: dir }, (resp) => {
-    saveDirBtn.disabled = false;
-    setIconText(saveDirBtn, 'save', 'Save');
-    if (resp?.error) {
-      saveDirBtn.classList.add('error');
-      outputDirInput.title = resp.error;
-      const error = classifyDirectoryError(resp.error);
-      setDirectoryFeedback(error.message, 'error', error.icon);
-    } else {
-      saveDirBtn.classList.remove('error');
-      outputDirInput.title = '';
-      lastSavedOutputDir = resp?.outputDir || dir;
-      setDirectoryFeedback('Directory saved', 'success', 'check-circle');
-    }
-  });
-});
-
-outputDirInput.addEventListener('input', () => {
-  if (outputDirInput.value.trim() !== lastSavedOutputDir) {
-    setDirectoryFeedback('Unsaved changes', 'unsaved', 'clock');
-  } else {
-    setDirectoryFeedback('', '');
-  }
-});
-
-function setDirectoryFeedback(message, type, iconName) {
-  dirFeedback.replaceChildren();
-  if (message) {
-    if (iconName) dirFeedback.appendChild(createIcon(iconName, 'icon dir-feedback-icon'));
-    dirFeedback.appendChild(document.createTextNode(message));
-  }
-  dirFeedback.className = type ? `dir-feedback ${type}` : 'dir-feedback';
-}
-
-function classifyDirectoryError(message) {
-  const lower = String(message || '').toLowerCase();
-  if (lower.includes('permission') || lower.includes('denied')) {
-    return { message: 'Permission denied', icon: 'lock' };
-  }
-  if (lower.includes('not running') || lower.includes('transport') || lower.includes('daemon')) {
-    return { message: message || 'Extension not connected', icon: 'wifi-off' };
-  }
-  if (lower.includes('not found') || lower.includes('no such')) {
-    return { message: 'Directory not found', icon: 'triangle-alert' };
-  }
-  return { message: message || 'Unable to save directory', icon: 'triangle-alert' };
-}
 
 sessionCard.addEventListener('click', () => openDashboard('?session=current#tab=tweets'));
 alltimeCard.addEventListener('click', () => openDashboard('#tab=tweets'));

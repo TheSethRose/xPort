@@ -148,6 +148,7 @@ def list_stored_tweets_from_api(
     include_total=False,
     include_facets=False,
     include_metrics=False,
+    facet_query=None,
 ):
     """Fetch a stored tweet page from the hosted API, including media rows."""
     limit = max(1, min(int(limit or 50), 500))
@@ -182,6 +183,8 @@ def list_stored_tweets_from_api(
         api_query['include_total'] = 'true'
     if include_facets:
         api_query['include_facets'] = 'true'
+    if facet_query:
+        api_query['facet_q'] = facet_query
     if include_metrics:
         api_query['include_metrics'] = 'true'
     result = _api_json('GET', '/api/tweets', query=api_query)

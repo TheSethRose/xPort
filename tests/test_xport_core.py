@@ -304,7 +304,8 @@ class TestListStoredTweetsFromApi:
             media='video',
             transcription='done',
             has_quoted=True,
-            sort='oldest',
+            sort='views',
+            facet_query='@sethrose',
             include_total=True,
             include_facets=True,
             include_metrics=True,
@@ -314,7 +315,7 @@ class TestListStoredTweetsFromApi:
         assert captured['url'] == (
             'https://xport.example/api/tweets?limit=100&offset=200&include_media=true'
             '&q=codex&author=seth&endpoint=HomeTimeline&media=video&transcription=done'
-            '&sort=oldest&has_quoted=true&include_total=true&include_facets=true&include_metrics=true'
+            '&sort=views&has_quoted=true&include_total=true&include_facets=true&facet_q=%40sethrose&include_metrics=true'
         )
 
 

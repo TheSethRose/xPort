@@ -95,8 +95,17 @@
               <option value="24h">Last 24 hours</option>
             </select>
             <select id="sort-filter" aria-label="Sort tweets">
-              <option value="newest">Newest first</option>
-              <option value="oldest">Oldest first</option>
+              <option value="newest">Posted newest</option>
+              <option value="oldest">Posted oldest</option>
+              <option value="captured_newest">Captured newest</option>
+              <option value="captured_oldest">Captured oldest</option>
+              <option value="views">Most views</option>
+              <option value="likes">Most likes</option>
+              <option value="retweets">Most reposts</option>
+              <option value="replies">Most replies</option>
+              <option value="quotes">Most quotes</option>
+              <option value="bookmarks">Most bookmarks</option>
+              <option value="engagement">Most engagement</option>
               <option value="author">Author</option>
               <option value="source">Source</option>
               <option value="status">Status</option>
@@ -118,12 +127,14 @@
 
         <div id="bulk-bar" class="bulk-bar" hidden>
           <span id="bulk-count">0 selected</span>
+          <button id="bulk-select-matching" class="small-btn">Select all matching</button>
           <button id="bulk-export" class="small-btn">Export selected</button>
           <button id="bulk-copy-urls" class="small-btn">Copy URLs</button>
           <button id="bulk-copy-text" class="small-btn">Copy Text</button>
           <button id="bulk-rerun" class="small-btn">Re-run Parser</button>
           <button id="bulk-remove" class="small-btn">Remove</button>
           <button id="bulk-reviewed" class="small-btn">Mark reviewed</button>
+          <button id="bulk-clear-selection" class="small-btn">Clear selection</button>
         </div>
 
         <div id="tweet-pagination" class="tweet-pagination" hidden>
